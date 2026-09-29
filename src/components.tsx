@@ -1,4 +1,4 @@
-﻿import {
+import {
   useEffect,
   useRef,
   useState,
@@ -58,13 +58,21 @@ function SendProgress({ progress }: { progress: number }) {
 }
 interface ConnectionCardProps {
   connection: ConnectionState;
-  onConnect: () => void;
+  onConnect: (force?: boolean) => void;
   onDisconnect: () => void;
 }
+
+const statusLabel: Record<ConnectionState['status'], string> = {
+  conectado: 'Conectado',
+  desconectado: 'Desconectado',
+  aguardando_qr: 'Aguardando QR',
+  conectando: 'Iniciando',
+};
 
 export function ConnectionCard({ connection, onConnect, onDisconnect }: ConnectionCardProps) {
   const isConnected = connection.status === 'conectado';
   const isWaitingForQrCode = connection.status === 'aguardando_qr';
+  const isConnecting = connection.status === 'conectando';
   return (
     <section className="overflow-hidden rounded-3xl border border-white/10 bg-[#121212] p-6 shadow-2xl shadow-black/30">
       <header className="flex items-start justify-between gap-4">
@@ -72,9 +80,9 @@ export function ConnectionCard({ connection, onConnect, onDisconnect }: Connecti
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#deff9a]">WhatsApp</p>
           <h2 className="mt-2 text-xl font-semibold text-white">Status da conexao</h2>
         </div>
-        <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${isConnected ? 'border-[#deff9a]/20 bg-[#deff9a]/10 text-[#deff9a]' : isWaitingForQrCode ? 'border-amber-400/20 bg-amber-400/10 text-amber-300' : 'border-white/10 bg-white/5 text-zinc-400'}`}>
-          <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#deff9a] shadow-[0_0_12px_#deff9a]' : isWaitingForQrCode ? 'animate-pulse bg-amber-300' : 'bg-zinc-600'}`} />
-          {isConnected ? 'Conectado' : isWaitingForQrCode ? 'Aguardando QR' : 'Desconectado'}
+        <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${isConnected ? 'border-[#deff9a]/20 bg-[#deff9a]/10 text-[#deff9a]' : isWaitingForQrCode || isConnecting ? 'border-amber-400/20 bg-amber-400/10 text-amber-300' : 'border-white/10 bg-white/5 text-zinc-400'}`}>
+          <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#deff9a] shadow-[0_0_12px_#deff9a]' : isWaitingForQrCode || isConnecting ? 'animate-pulse bg-amber-300' : 'bg-zinc-600'}`} />
+          {statusLabel[connection.status]}
         </span>
       </header>
       <div className="mt-7">
@@ -85,14 +93,24 @@ export function ConnectionCard({ connection, onConnect, onDisconnect }: Connecti
             </div>
             <p className="mt-4 font-medium text-white">Nenhum aparelho conectado</p>
             <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">Inicie o pareamento para vincular uma conta do WhatsApp.</p>
-            <button type="button" onClick={onConnect} className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] sm:w-auto">
+            {connection.error && (
+              <p className="mt-3 max-w-sm text-xs leading-5 text-red-300">{connection.error}</p>
+            )}
+            <button type="button" onClick={() => onConnect(false)} className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] sm:w-auto">
               <Smartphone aria-hidden="true" size={18} />
               Conectar WhatsApp
             </button>
           </div>
         )}
+        {connection.status === 'conectando' && (
+          <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-amber-400/20 bg-black/20 px-6 text-center" aria-live="polite">
+            <div className="h-14 w-14 animate-spin rounded-2xl border-2 border-amber-300/20 border-t-amber-300" />
+            <p className="mt-4 font-medium text-white">Iniciando o WhatsApp Web...</p>
+            <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">O navegador esta abrindo. O QR Code aparece em seguida.</p>
+          </div>
+        )}
         {connection.status === 'aguardando_qr' && (
-          <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-[#deff9a]/25 bg-[#050505] px-6 text-center" aria-live="polite">
+          <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-[#deff9a]/25 bg-[#050505] px-6 pb-6 text-center" aria-live="polite">
             <div className="relative grid h-52 w-52 place-items-center overflow-hidden rounded-2xl border-2 border-[#deff9a] bg-[#050505] p-3 shadow-[0_0_36px_rgba(222,255,154,0.45)]">
               {connection.qrCode ? (
                 <img
@@ -105,7 +123,10 @@ export function ConnectionCard({ connection, onConnect, onDisconnect }: Connecti
               )}
             </div>
             <p className="mt-5 font-medium text-white">Aguardando leitura do aparelho...</p>
-            <p className="mt-1 text-sm text-zinc-500">Abra o WhatsApp e escaneie o codigo para continuar.</p>
+            <p className="mt-1 text-sm text-zinc-500">O codigo e renovado automaticamente. Escaneie o QR atual no WhatsApp.</p>
+            <button type="button" onClick={() => onConnect(true)} className="mt-4 text-xs font-medium text-[#deff9a] transition hover:underline">
+              Gerar novo QR Code
+            </button>
           </div>
         )}
         {connection.status === 'conectado' && (
@@ -203,7 +224,7 @@ export function HistoryTable({ logs }: HistoryTableProps) {
 interface OverviewViewProps {
   connection: ConnectionState;
   logs: DispatchLog[];
-  onConnect: () => void;
+  onConnect: (force?: boolean) => void;
   onDisconnect: () => void;
 }
 export function OverviewView({ connection, logs, onConnect, onDisconnect }: OverviewViewProps) {
@@ -277,25 +298,41 @@ export function QuickSendView({ onSend, isSending, progress }: QuickSendViewProp
 
 interface MassCampaignViewProps {
   contactsList: Contact[];
+  isLoadingContacts?: boolean;
   onSend: (destino: string, contacts: Contact[], image: File | null, message: string) => void;
   isSending: boolean;
   progress: number;
 }
 
-export function MassCampaignView({ contactsList, onSend, isSending, progress }: MassCampaignViewProps) {
+export function MassCampaignView({ contactsList, isLoadingContacts = false, onSend, isSending, progress }: MassCampaignViewProps) {
   const [imageFile, setImageFile]             = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
-  const imageInputRef = useRef<HTMLInputElement>(null);
+  const imageInputRef  = useRef<HTMLInputElement>(null);
+  const listScrollRef  = useRef<HTMLDivElement>(null);
   const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [searchQuery, setSearchQuery]           = useState('');
   const [message, setMessage] = useState('');
 
-  const filteredContacts = contactsList.filter(
-    (c) => c.nomeCompleto.toLowerCase().includes(searchQuery.toLowerCase()) || c.telefone.includes(searchQuery),
-  );
-  const allSelected = filteredContacts.length > 0 && filteredContacts.every((c) => selectedContacts.includes(c.id));
+  const filteredContacts = contactsList.filter((c) => {
+    const query = searchQuery.toLowerCase();
+    if (c.nomeCompleto.toLowerCase().includes(query)) return true;
+    
+    const queryDigits = query.replace(/\D/g, '');
+    if (queryDigits.length > 0 && c.telefone.replace(/\D/g, '').includes(queryDigits)) return true;
+    
+    return c.telefone.toLowerCase().includes(query);
+  });
+  const allSelected  = filteredContacts.length > 0 && filteredContacts.every((c) => selectedContacts.includes(c.id));
   const someSelected = filteredContacts.some((c) => selectedContacts.includes(c.id));
   const canSend = selectedContacts.length > 0 && message.trim().length > 0;
+
+  // Reseta o scroll do container para o topo sempre que a busca mudar,
+  // evitando que itens antigos fiquem visiveis na viewport por causa da posicao de scroll.
+  useEffect(() => {
+    if (listScrollRef.current) {
+      listScrollRef.current.scrollTop = 0;
+    }
+  }, [searchQuery]);
 
   useEffect(() => {
     if (!imageFile) { setImagePreviewUrl(null); return; }
@@ -401,7 +438,14 @@ export function MassCampaignView({ contactsList, onSend, isSending, progress }: 
                   {/* Search */}
                   <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2.5">
                     <Search size={14} className="shrink-0 text-zinc-600" aria-hidden="true" />
-                    <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Buscar contato..." className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-600" />
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder={isLoadingContacts ? 'Carregando contatos...' : 'Buscar por nome ou numero...'}
+                      disabled={isLoadingContacts}
+                      className="flex-1 bg-transparent text-sm text-white outline-none placeholder:text-zinc-600 disabled:cursor-wait"
+                    />
                     {searchQuery && (
                       <button type="button" onClick={() => setSearchQuery('')} aria-label="Limpar busca" className="text-zinc-600 transition hover:text-zinc-300">
                         <XCircle size={14} />
@@ -409,24 +453,35 @@ export function MassCampaignView({ contactsList, onSend, isSending, progress }: 
                     )}
                   </div>
                   {/* Select-all */}
-                  <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2.5">
-                    <button type="button" onClick={handleToggleAll} className="flex items-center gap-2.5 text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-200">
-                      <span className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${allSelected ? 'border-[#deff9a] bg-[#deff9a]' : someSelected ? 'border-white/30 bg-white/10' : 'border-white/20 bg-transparent'}`}>
-                        {allSelected && <Check size={10} className="text-black" strokeWidth={3} />}
-                        {someSelected && !allSelected && <span className="block h-[5px] w-[5px] rounded-[1px] bg-zinc-300" />}
-                      </span>
-                      Selecionar todos
-                    </button>
-                    {filteredContacts.length !== contactsList.length && (
-                      <span className="text-xs text-zinc-700">{filteredContacts.length} resultado{filteredContacts.length !== 1 ? 's' : ''}</span>
-                    )}
-                  </div>
+                  {!isLoadingContacts && contactsList.length > 0 && (
+                    <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2.5">
+                      <button type="button" onClick={handleToggleAll} className="flex items-center gap-2.5 text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-200">
+                        <span className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${allSelected ? 'border-[#deff9a] bg-[#deff9a]' : someSelected ? 'border-white/30 bg-white/10' : 'border-white/20 bg-transparent'}`}>
+                          {allSelected && <Check size={10} className="text-black" strokeWidth={3} />}
+                          {someSelected && !allSelected && <span className="block h-[5px] w-[5px] rounded-[1px] bg-zinc-300" />}
+                        </span>
+                        Selecionar todos
+                      </button>
+                      {filteredContacts.length !== contactsList.length && (
+                        <span className="text-xs text-zinc-700">{filteredContacts.length} resultado{filteredContacts.length !== 1 ? 's' : ''}</span>
+                      )}
+                    </div>
+                  )}
                   {/* Rows */}
-                  <div className="max-h-56 divide-y divide-white/[0.04] overflow-y-auto" role="group" aria-label="Lista de contatos">
-                    {filteredContacts.length === 0 ? (
+                  <div ref={listScrollRef} className="max-h-56 divide-y divide-white/[0.04] overflow-y-auto" role="group" aria-label="Lista de contatos">
+                    {isLoadingContacts ? (
+                      <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
+                        <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-[#deff9a]" />
+                        <p className="text-sm text-zinc-500">Carregando contatos do aparelho...</p>
+                      </div>
+                    ) : filteredContacts.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
                         <Search size={22} className="text-zinc-800" />
-                        <p className="text-sm text-zinc-600">Nenhum contato encontrado</p>
+                        <p className="text-sm text-zinc-600">
+                          {contactsList.length === 0
+                            ? 'Conecte o WhatsApp para carregar os contatos.'
+                            : 'Nenhum contato encontrado para essa busca.'}
+                        </p>
                       </div>
                     ) : (
                       filteredContacts.map((contact) => {
@@ -438,7 +493,7 @@ export function MassCampaignView({ contactsList, onSend, isSending, progress }: 
                             aria-checked={isSelected}
                             tabIndex={0}
                             onClick={() => toggleContact(contact.id)}
-                            onKeyDown={(e) => e.key === ' ' && toggleContact(contact.id)}
+                            onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); toggleContact(contact.id); } }}
                             className={`flex cursor-pointer select-none items-center gap-3 px-3 py-3 transition-colors ${isSelected ? 'bg-[#deff9a]/[0.05]' : 'hover:bg-white/[0.02]'}`}
                           >
                             <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${isSelected ? 'border-[#deff9a] bg-[#deff9a]' : 'border-white/20 bg-transparent'}`}>

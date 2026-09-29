@@ -1,9 +1,10 @@
 export interface ConnectionState {
-  status: 'conectado' | 'desconectado' | 'aguardando_qr';
+  status: 'conectado' | 'desconectado' | 'aguardando_qr' | 'conectando';
   telefone: string;
   fotoPerfilUrl: string;
   conectadoEm: string | null;
   qrCode: string | null;
+  error: string | null;
 }
 
 export const mockConnection: ConnectionState = {
@@ -12,6 +13,7 @@ export const mockConnection: ConnectionState = {
   fotoPerfilUrl: 'https://ui-avatars.com/api/?name=WhatsApp&background=25D366&color=ffffff',
   conectadoEm: null,
   qrCode: null,
+  error: null,
 };
 
 export interface Contact {

@@ -23,7 +23,7 @@ export default function Dashboard() {
 
   const { connection, iniciarPareamento, desconectar } = useWhatsAppConnection();
   const { logs, isSending, progress, dispararCampanha } = useCampaignManager();
-  const contactsList = useWhatsAppContacts(connection.status);
+  const { contacts: contactsList, isLoadingContacts } = useWhatsAppContacts(connection.status);
 
   return (
     <div className="flex min-h-screen bg-[#050505] text-white">
@@ -101,11 +101,13 @@ export default function Dashboard() {
         {currentView === 'mass' && (
           <MassCampaignView
             contactsList={contactsList}
+            isLoadingContacts={isLoadingContacts}
             onSend={(destino, contacts, image, message) => {
               void dispararCampanha('massa', destino, {
                 numbers: contacts.map((contact) => contact.telefone),
                 message,
                 imageFile: image,
+                contacts,
               });
             }}
             isSending={isSending}

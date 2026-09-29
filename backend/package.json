@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "concurrently -n \"API,UI\" -c \"green,cyan\" --kill-others-on-fail \"node server.js\" \"npm run dev --prefix ../painel-dlm\""
   },
   "dependencies": {
     "cors": "^2.8.6",
@@ -13,5 +13,8 @@
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.7"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   }
 }
