@@ -1,3 +1,13 @@
+export interface SessionItem {
+  id: string;
+  name: string;
+  status: 'conectado' | 'desconectado' | 'aguardando_qr' | 'conectando';
+  telefone?: string;
+  fotoPerfilUrl?: string;
+  qrCode?: string | null;
+  error?: string | null;
+}
+
 export interface ConnectionState {
   status: 'conectado' | 'desconectado' | 'aguardando_qr' | 'conectando';
   telefone: string;
@@ -5,6 +15,8 @@ export interface ConnectionState {
   conectadoEm: string | null;
   qrCode: string | null;
   error: string | null;
+  sessions: SessionItem[];
+  activeSessionId: string;
 }
 
 export const mockConnection: ConnectionState = {
@@ -14,6 +26,18 @@ export const mockConnection: ConnectionState = {
   conectadoEm: null,
   qrCode: null,
   error: null,
+  sessions: [
+    {
+      id: 'default',
+      name: 'Chip 1',
+      status: 'desconectado',
+      telefone: '',
+      fotoPerfilUrl: 'https://ui-avatars.com/api/?name=Chip+1&background=25D366&color=ffffff',
+      qrCode: null,
+      error: null,
+    },
+  ],
+  activeSessionId: 'default',
 };
 
 export interface Contact {

@@ -6,22 +6,26 @@ import {
   type FormEvent,
 } from 'react';
 import {
+  AlertCircle,
   Camera,
   Check,
   CheckCircle2,
   Clock3,
+  Layers,
   LogOut,
   MessageSquareText,
+  Plus,
   Search,
   Send,
   Smartphone,
+  Trash2,
   Unplug,
   Users,
   XCircle,
   Zap,
 } from 'lucide-react';
 
-import type { ConnectionState, Contact, DispatchLog } from './mockData';
+import type { ConnectionState, Contact, DispatchLog, SessionItem } from './mockData';
 
 function PageHeader({ title, description }: { title: string; description: string }) {
   return (
@@ -58,8 +62,11 @@ function SendProgress({ progress }: { progress: number }) {
 }
 interface ConnectionCardProps {
   connection: ConnectionState;
-  onConnect: (force?: boolean) => void;
-  onDisconnect: () => void;
+  onConnect: (force?: boolean, sessionId?: string) => void;
+  onDisconnect: (sessionId?: string) => void;
+  onSelectSession?: (sessionId: string) => void;
+  onAddSession?: (name?: string) => void;
+  onRemoveSession?: (sessionId: string) => void;
 }
 
 const statusLabel: Record<ConnectionState['status'], string> = {
@@ -69,76 +76,181 @@ const statusLabel: Record<ConnectionState['status'], string> = {
   conectando: 'Iniciando',
 };
 
-export function ConnectionCard({ connection, onConnect, onDisconnect }: ConnectionCardProps) {
-  const isConnected = connection.status === 'conectado';
-  const isWaitingForQrCode = connection.status === 'aguardando_qr';
-  const isConnecting = connection.status === 'conectando';
+export function ConnectionCard({
+  connection,
+  onConnect,
+  onDisconnect,
+  onSelectSession,
+  onAddSession,
+  onRemoveSession,
+}: ConnectionCardProps) {
+  const currentSession =
+    connection.sessions?.find((s) => s.id === connection.activeSessionId) ||
+    connection.sessions?.[0] || {
+      id: 'default',
+      name: 'Chip 1',
+      status: connection.status,
+      telefone: connection.telefone,
+      fotoPerfilUrl: connection.fotoPerfilUrl,
+      qrCode: connection.qrCode,
+      error: connection.error,
+    };
+
+  const isConnected = currentSession.status === 'conectado';
+  const isWaitingForQrCode = currentSession.status === 'aguardando_qr';
+  const isConnecting = currentSession.status === 'conectando';
+
   return (
     <section className="overflow-hidden rounded-3xl border border-white/10 bg-[#121212] p-6 shadow-2xl shadow-black/30">
       <header className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#deff9a]">WhatsApp</p>
-          <h2 className="mt-2 text-xl font-semibold text-white">Status da conexao</h2>
+          <div className="flex items-center gap-2">
+            <Layers className="text-[#deff9a]" size={16} />
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#deff9a]">WhatsApp Multi-Chip</p>
+          </div>
+          <h2 className="mt-2 text-xl font-semibold text-white">{currentSession.name}</h2>
         </div>
         <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${isConnected ? 'border-[#deff9a]/20 bg-[#deff9a]/10 text-[#deff9a]' : isWaitingForQrCode || isConnecting ? 'border-amber-400/20 bg-amber-400/10 text-amber-300' : 'border-white/10 bg-white/5 text-zinc-400'}`}>
           <span className={`h-2 w-2 rounded-full ${isConnected ? 'bg-[#deff9a] shadow-[0_0_12px_#deff9a]' : isWaitingForQrCode || isConnecting ? 'animate-pulse bg-amber-300' : 'bg-zinc-600'}`} />
-          {statusLabel[connection.status]}
+          {statusLabel[currentSession.status]}
         </span>
       </header>
-      <div className="mt-7">
-        {connection.status === 'desconectado' && (
+
+      {/* Abas e Seleção de Chips */}
+      <div className="mt-5 flex flex-wrap items-center gap-2 border-b border-white/[0.08] pb-4">
+        {connection.sessions?.map((sess) => {
+          const isSelected = sess.id === currentSession.id;
+          const isSessConn = sess.status === 'conectado';
+          const isSessWait = sess.status === 'aguardando_qr' || sess.status === 'conectando';
+
+          return (
+            <div
+              key={sess.id}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter') onSelectSession?.(sess.id); }}
+              onClick={() => onSelectSession?.(sess.id)}
+              className={`group flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium transition cursor-pointer select-none ${
+                isSelected
+                  ? 'bg-[#deff9a]/15 text-[#deff9a] ring-1 ring-[#deff9a]/40 shadow-[0_0_12px_rgba(222,255,154,0.15)]'
+                  : 'bg-white/5 text-zinc-400 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  isSessConn
+                    ? 'bg-[#deff9a] shadow-[0_0_8px_#deff9a]'
+                    : isSessWait
+                    ? 'animate-pulse bg-amber-300'
+                    : 'bg-zinc-600'
+                }`}
+              />
+              <span>{sess.name}</span>
+              {sess.telefone && (
+                <span className="hidden text-[10px] text-zinc-500 sm:inline">({sess.telefone})</span>
+              )}
+              {sess.id !== 'default' && onRemoveSession && (
+                <button
+                  type="button"
+                  title="Remover este chip"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (window.confirm(`Deseja desconectar e remover o "${sess.name}"?`)) {
+                      onRemoveSession(sess.id);
+                    }
+                  }}
+                  className="ml-1 rounded p-0.5 text-zinc-500 hover:bg-red-500/20 hover:text-red-400 transition"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+
+        {onAddSession && (
+          <button
+            type="button"
+            onClick={() => {
+              const name = window.prompt('Digite o nome para o novo chip (ex: Chip Comercial 2):');
+              if (name !== null) {
+                onAddSession(name);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-dashed border-white/20 bg-white/[0.03] px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-[#deff9a]/40 hover:bg-[#deff9a]/5 hover:text-[#deff9a]"
+          >
+            <Plus size={13} />
+            Novo Chip
+          </button>
+        )}
+      </div>
+
+      <div className="mt-6">
+        {currentSession.status === 'desconectado' && (
           <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-black/20 px-6 text-center">
             <div className="grid h-14 w-14 place-items-center rounded-2xl bg-white/5 text-zinc-400">
               <Unplug aria-hidden="true" size={26} />
             </div>
-            <p className="mt-4 font-medium text-white">Nenhum aparelho conectado</p>
-            <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">Inicie o pareamento para vincular uma conta do WhatsApp.</p>
-            {connection.error && (
-              <p className="mt-3 max-w-sm text-xs leading-5 text-red-300">{connection.error}</p>
+            <p className="mt-4 font-medium text-white">Nenhum aparelho conectado neste chip</p>
+            <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">Inicie o pareamento para vincular o WhatsApp ao {currentSession.name}.</p>
+            {currentSession.error && (
+              <p className="mt-3 max-w-sm text-xs leading-5 text-red-300">{currentSession.error}</p>
             )}
-            <button type="button" onClick={() => onConnect(false)} className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] sm:w-auto">
+            <button
+              type="button"
+              onClick={() => onConnect(false, currentSession.id)}
+              className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] sm:w-auto"
+            >
               <Smartphone aria-hidden="true" size={18} />
-              Conectar WhatsApp
+              Conectar {currentSession.name}
             </button>
           </div>
         )}
-        {connection.status === 'conectando' && (
+        {currentSession.status === 'conectando' && (
           <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-amber-400/20 bg-black/20 px-6 text-center" aria-live="polite">
             <div className="h-14 w-14 animate-spin rounded-2xl border-2 border-amber-300/20 border-t-amber-300" />
-            <p className="mt-4 font-medium text-white">Iniciando o WhatsApp Web...</p>
-            <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">O navegador esta abrindo. O QR Code aparece em seguida.</p>
+            <p className="mt-4 font-medium text-white">Iniciando {currentSession.name}...</p>
+            <p className="mt-1 max-w-sm text-sm leading-6 text-zinc-500">O navegador está abrindo em segundo plano. O QR Code aparecerá a seguir.</p>
           </div>
         )}
-        {connection.status === 'aguardando_qr' && (
+        {currentSession.status === 'aguardando_qr' && (
           <div className="flex min-h-52 flex-col items-center justify-center rounded-2xl border border-[#deff9a]/25 bg-[#050505] px-6 pb-6 text-center" aria-live="polite">
             <div className="relative grid h-52 w-52 place-items-center overflow-hidden rounded-2xl border-2 border-[#deff9a] bg-[#050505] p-3 shadow-[0_0_36px_rgba(222,255,154,0.45)]">
-              {connection.qrCode ? (
+              {currentSession.qrCode ? (
                 <img
-                  src={connection.qrCode}
-                  alt="QR Code do WhatsApp"
+                  src={currentSession.qrCode}
+                  alt={`QR Code do WhatsApp - ${currentSession.name}`}
                   className="h-full w-full rounded-xl bg-white object-contain p-1"
                 />
               ) : (
                 <div className="h-full w-full animate-pulse rounded-xl bg-white/5" />
               )}
             </div>
-            <p className="mt-5 font-medium text-white">Aguardando leitura do aparelho...</p>
-            <p className="mt-1 text-sm text-zinc-500">O codigo e renovado automaticamente. Escaneie o QR atual no WhatsApp.</p>
-            <button type="button" onClick={() => onConnect(true)} className="mt-4 text-xs font-medium text-[#deff9a] transition hover:underline">
+            <p className="mt-5 font-medium text-white">Escaneie o QR Code no WhatsApp</p>
+            <p className="mt-1 text-sm text-zinc-500">Vincule o aparelho ao {currentSession.name}.</p>
+            <button
+              type="button"
+              onClick={() => onConnect(true, currentSession.id)}
+              className="mt-4 text-xs font-medium text-[#deff9a] transition hover:underline"
+            >
               Gerar novo QR Code
             </button>
           </div>
         )}
-        {connection.status === 'conectado' && (
+        {currentSession.status === 'conectado' && (
           <div className="rounded-2xl border border-[#deff9a]/15 bg-gradient-to-br from-[#deff9a]/10 to-transparent p-5">
             <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
               <div className="relative shrink-0">
-                <img src={connection.fotoPerfilUrl} alt="Foto de perfil" className="h-16 w-16 rounded-2xl border border-white/10 object-cover" />
+                <img
+                  src={currentSession.fotoPerfilUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(currentSession.name)}&background=25D366&color=ffffff`}
+                  alt="Foto de perfil"
+                  className="h-16 w-16 rounded-2xl border border-white/10 object-cover"
+                />
                 <span className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full border-[3px] border-[#121212] bg-[#deff9a]" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Numero conectado</p>
-                <p className="mt-1 truncate text-lg font-semibold text-white">{connection.telefone}</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-zinc-500">Número conectado ({currentSession.name})</p>
+                <p className="mt-1 truncate text-lg font-semibold text-white">{currentSession.telefone || 'Conectado'}</p>
                 {connection.conectadoEm && (
                   <p className="mt-2 flex items-center gap-1.5 text-xs text-zinc-500">
                     <Clock3 aria-hidden="true" size={14} />
@@ -146,7 +258,11 @@ export function ConnectionCard({ connection, onConnect, onDisconnect }: Connecti
                   </p>
                 )}
               </div>
-              <button type="button" onClick={onDisconnect} className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-red-400/30 hover:bg-red-400/10 hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-red-400/40">
+              <button
+                type="button"
+                onClick={() => onDisconnect(currentSession.id)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:border-red-400/30 hover:bg-red-400/10 hover:text-red-300 focus:outline-none focus:ring-2 focus:ring-red-400/40"
+              >
                 <LogOut aria-hidden="true" size={17} />
                 Desconectar
               </button>
@@ -224,17 +340,36 @@ export function HistoryTable({ logs }: HistoryTableProps) {
 interface OverviewViewProps {
   connection: ConnectionState;
   logs: DispatchLog[];
-  onConnect: (force?: boolean) => void;
-  onDisconnect: () => void;
+  onConnect: (force?: boolean, sessionId?: string) => void;
+  onDisconnect: (sessionId?: string) => void;
+  onSelectSession?: (sessionId: string) => void;
+  onAddSession?: (name?: string) => void;
+  onRemoveSession?: (sessionId: string) => void;
 }
-export function OverviewView({ connection, logs, onConnect, onDisconnect }: OverviewViewProps) {
+
+export function OverviewView({
+  connection,
+  logs,
+  onConnect,
+  onDisconnect,
+  onSelectSession,
+  onAddSession,
+  onRemoveSession,
+}: OverviewViewProps) {
   return (
     <div className="flex flex-col">
-      <PageHeader title="Visao Geral" description="Monitore a conexao ativa e o historico de disparos em tempo real." />
+      <PageHeader title="Visão Geral" description="Monitore múltiplos chips WhatsApp conectados e o histórico de disparos em tempo real." />
       <div className="p-8">
         <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(300px,0.85fr)_minmax(0,1.6fr)]">
           <div className="xl:sticky xl:top-24">
-            <ConnectionCard connection={connection} onConnect={onConnect} onDisconnect={onDisconnect} />
+            <ConnectionCard
+              connection={connection}
+              onConnect={onConnect}
+              onDisconnect={onDisconnect}
+              onSelectSession={onSelectSession}
+              onAddSession={onAddSession}
+              onRemoveSession={onRemoveSession}
+            />
           </div>
           <HistoryTable logs={logs} />
         </div>
@@ -244,24 +379,45 @@ export function OverviewView({ connection, logs, onConnect, onDisconnect }: Over
 }
 
 interface QuickSendViewProps {
-  onSend: (destino: string, message: string) => void;
+  sessions?: SessionItem[];
+  onSend: (
+    destino: string,
+    message: string,
+    sessionId?: string
+  ) => Promise<{ success: boolean; message: string }> | void;
   isSending: boolean;
   progress: number;
 }
-export function QuickSendView({ onSend, isSending, progress }: QuickSendViewProps) {
+
+export function QuickSendView({ sessions, onSend, isSending, progress }: QuickSendViewProps) {
   const [destination, setDestination] = useState('');
   const [message, setMessage] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState('auto');
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const canSend = destination.trim().length > 0 && message.trim().length > 0;
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isSending && canSend) onSend(destination.trim(), message.trim());
+    if (!isSending && canSend) {
+      setFeedback(null);
+      const res = await onSend(destination.trim(), message.trim(), selectedSessionId);
+      if (res) {
+        if (res.success) {
+          setFeedback({ type: 'success', text: res.message || 'Mensagem enviada com sucesso!' });
+          setMessage('');
+        } else {
+          setFeedback({ type: 'error', text: res.message || 'Falha ao enviar mensagem.' });
+        }
+      }
+    }
   }
+
   return (
     <div className="flex flex-col">
-      <PageHeader title="Envio Rapido" description="Envie uma mensagem pontual para um destinatario especifico." />
-      <div className="flex flex-1 items-start justify-center p-8 lg:pt-12">
+      <PageHeader title="Envio Rápido" description="Envie uma mensagem pontual para um destinatário específico escolhendo o chip de envio." />
+      <div className="flex flex-1 items-start justify-center p-4 sm:p-8 lg:pt-12">
         <div className="w-full max-w-xl">
-          <section className="rounded-3xl border border-white/10 bg-[#121212] p-7 shadow-2xl shadow-black/40">
+          <section className="rounded-3xl border border-white/10 bg-[#121212] p-5 sm:p-7 shadow-2xl shadow-black/40">
             <header className="flex items-center gap-3">
               <div className="grid h-11 w-11 place-items-center rounded-xl bg-[#deff9a]/10 text-[#deff9a]">
                 <MessageSquareText aria-hidden="true" size={22} />
@@ -272,8 +428,54 @@ export function QuickSendView({ onSend, isSending, progress }: QuickSendViewProp
               </div>
             </header>
             <form className="mt-7 space-y-5" onSubmit={handleSubmit}>
+              {feedback && (
+                <div
+                  role="alert"
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-sm transition animate-in fade-in duration-200 ${
+                    feedback.type === 'success'
+                      ? 'border-[#deff9a]/40 bg-[#deff9a]/10 text-[#deff9a]'
+                      : 'border-red-500/40 bg-red-500/10 text-red-400'
+                  }`}
+                >
+                  {feedback.type === 'success' ? (
+                    <CheckCircle2 size={20} className="shrink-0 text-[#deff9a] mt-0.5" />
+                  ) : (
+                    <AlertCircle size={20} className="shrink-0 text-red-400 mt-0.5" />
+                  )}
+                  <p className="flex-1 font-medium">{feedback.text}</p>
+                  <button
+                    type="button"
+                    onClick={() => setFeedback(null)}
+                    className="shrink-0 text-xs opacity-60 hover:opacity-100 transition px-1 py-0.5"
+                    aria-label="Fechar notificação"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              {sessions && sessions.length > 0 && (
+                <div>
+                  <label htmlFor="qs-chip" className="mb-2 block text-sm font-medium text-zinc-300">
+                    Chip de Envio
+                  </label>
+                  <select
+                    id="qs-chip"
+                    value={selectedSessionId}
+                    onChange={(e) => setSelectedSessionId(e.target.value)}
+                    disabled={isSending}
+                    className="w-full rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm text-white outline-none transition focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="auto">⚡ Automático (Rodízio entre chips conectados)</option>
+                    {sessions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.telefone ? `(${s.telefone})` : ''} - {s.status === 'conectado' ? '● Conectado' : '○ Desconectado'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
-                <label htmlFor="qs-destination" className="mb-2 block text-sm font-medium text-zinc-300">Numero ou destino</label>
+                <label htmlFor="qs-destination" className="mb-2 block text-sm font-medium text-zinc-300">Número ou destino</label>
                 <input id="qs-destination" type="text" value={destination} onChange={(e) => setDestination(e.target.value)} disabled={isSending} placeholder="Ex.: +55 (11) 99999-9999" className="w-full rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50" />
               </div>
               <div>
@@ -281,7 +483,7 @@ export function QuickSendView({ onSend, isSending, progress }: QuickSendViewProp
                   <label htmlFor="qs-message" className="text-sm font-medium text-zinc-300">Mensagem</label>
                   <span className="text-xs text-zinc-600">{message.length} caracteres</span>
                 </div>
-                <textarea id="qs-message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={isSending} placeholder="Digite a mensagem que sera enviada..." rows={5} className="w-full resize-none rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50" />
+                <textarea id="qs-message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={isSending} placeholder="Digite a mensagem que será enviada..." rows={5} className="w-full resize-none rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50" />
               </div>
               {isSending && <SendProgress progress={progress} />}
               <button type="submit" disabled={isSending || !canSend} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3.5 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500">
@@ -297,14 +499,22 @@ export function QuickSendView({ onSend, isSending, progress }: QuickSendViewProp
 }
 
 interface MassCampaignViewProps {
+  sessions?: SessionItem[];
   contactsList: Contact[];
   isLoadingContacts?: boolean;
-  onSend: (destino: string, contacts: Contact[], image: File | null, message: string) => void;
+  onSend: (
+    destino: string,
+    contacts: Contact[],
+    image: File | null,
+    message: string,
+    sessionId?: string
+  ) => Promise<{ success: boolean; message: string }> | void;
   isSending: boolean;
   progress: number;
 }
 
-export function MassCampaignView({ contactsList, isLoadingContacts = false, onSend, isSending, progress }: MassCampaignViewProps) {
+export function MassCampaignView({ sessions, contactsList, isLoadingContacts = false, onSend, isSending, progress }: MassCampaignViewProps) {
+  const [selectedSessionId, setSelectedSessionId] = useState('auto');
   const [imageFile, setImageFile]             = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
   const imageInputRef  = useRef<HTMLInputElement>(null);
@@ -312,6 +522,7 @@ export function MassCampaignView({ contactsList, isLoadingContacts = false, onSe
   const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [searchQuery, setSearchQuery]           = useState('');
   const [message, setMessage] = useState('');
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const filteredContacts = contactsList.filter((c) => {
     const query = searchQuery.toLowerCase();
@@ -360,21 +571,31 @@ export function MassCampaignView({ contactsList, isLoadingContacts = false, onSe
       setSelectedContacts((prev) => [...new Set([...prev, ...filteredIds])]);
     }
   }
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!isSending && canSend) {
+      setFeedback(null);
       const contactObjects = contactsList.filter((c) => selectedContacts.includes(c.id));
       const destino = `${contactObjects.length} contato${contactObjects.length !== 1 ? 's' : ''}`;
-      onSend(destino, contactObjects, imageFile, message.trim());
+      const res = await onSend(destino, contactObjects, imageFile, message.trim(), selectedSessionId);
+      if (res) {
+        if (res.success) {
+          setFeedback({ type: 'success', text: res.message || 'Campanha disparada com sucesso!' });
+          setMessage('');
+          handleRemoveImage();
+        } else {
+          setFeedback({ type: 'error', text: res.message || 'Falha ao disparar campanha.' });
+        }
+      }
     }
   }
 
   return (
     <div className="flex flex-col">
       <PageHeader title="Disparo em Massa" description="Selecione contatos, anexe uma imagem e dispare sua campanha." />
-      <div className="flex flex-1 items-start justify-center p-8 lg:pt-10">
+      <div className="flex flex-1 items-start justify-center p-4 sm:p-8 lg:pt-10">
         <div className="w-full max-w-2xl">
-          <section className="rounded-3xl border border-white/10 bg-[#121212] p-7 shadow-2xl shadow-black/40">
+          <section className="rounded-3xl border border-white/10 bg-[#121212] p-5 sm:p-7 shadow-2xl shadow-black/40">
 
             <header className="flex items-center gap-3">
               <div className="grid h-11 w-11 place-items-center rounded-xl bg-[#deff9a]/10 text-[#deff9a]">
@@ -387,6 +608,55 @@ export function MassCampaignView({ contactsList, isLoadingContacts = false, onSe
             </header>
 
             <form className="mt-7 space-y-6" onSubmit={handleSubmit}>
+              {feedback && (
+                <div
+                  role="alert"
+                  className={`flex items-start gap-3 rounded-2xl border p-4 text-sm transition animate-in fade-in duration-200 ${
+                    feedback.type === 'success'
+                      ? 'border-[#deff9a]/40 bg-[#deff9a]/10 text-[#deff9a]'
+                      : 'border-red-500/40 bg-red-500/10 text-red-400'
+                  }`}
+                >
+                  {feedback.type === 'success' ? (
+                    <CheckCircle2 size={20} className="shrink-0 text-[#deff9a] mt-0.5" />
+                  ) : (
+                    <AlertCircle size={20} className="shrink-0 text-red-400 mt-0.5" />
+                  )}
+                  <p className="flex-1 font-medium">{feedback.text}</p>
+                  <button
+                    type="button"
+                    onClick={() => setFeedback(null)}
+                    className="shrink-0 text-xs opacity-60 hover:opacity-100 transition px-1 py-0.5"
+                    aria-label="Fechar notificação"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              {sessions && sessions.length > 0 && (
+                <div>
+                  <label htmlFor="mass-chip" className="mb-2 block text-sm font-medium text-zinc-300">
+                    Chip de Envio
+                  </label>
+                  <select
+                    id="mass-chip"
+                    value={selectedSessionId}
+                    onChange={(e) => setSelectedSessionId(e.target.value)}
+                    disabled={isSending}
+                    className="w-full rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm text-white outline-none transition focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="auto">⚡ Automático (Rodízio entre chips conectados)</option>
+                    {sessions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} {s.telefone ? `(${s.telefone})` : ''} - {s.status === 'conectado' ? '● Conectado' : '○ Desconectado'}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1.5 text-xs text-zinc-500">
+                    No modo automático, os disparos são balanceados ciclicamente entre todos os números conectados, reduzindo bloqueios.
+                  </p>
+                </div>
+              )}
 
               {/* 1 - Image upload */}
               <div>

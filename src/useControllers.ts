@@ -5,6 +5,7 @@ import {
   type ConnectionState,
   type Contact,
   type DispatchLog,
+  type SessionItem,
 } from './mockData';
 
 /** Em dev o Vite encaminha /api para o Express na 3001. */
@@ -18,11 +19,21 @@ type ApiStatus = {
     pushname?: string;
     phone?: string;
   } | null;
+  sessions?: SessionItem[];
 };
 
 function applyApiStatus(current: ConnectionState, data: ApiStatus): ConnectionState {
-  const nextStatus = data.status ?? 'desconectado';
-  const qrFromApi = typeof data.qrCode === 'string' ? data.qrCode : '';
+  const currentActiveId = current.activeSessionId || 'default';
+  const incomingSessions: SessionItem[] = Array.isArray(data.sessions) && data.sessions.length > 0
+    ? data.sessions
+    : current.sessions;
+
+  // Busca a sessão ativa entre as sessões recebidas
+  const activeSess = incomingSessions.find((s) => s.id === currentActiveId) || incomingSessions[0];
+
+  const nextStatus = activeSess ? activeSess.status : (data.status ?? 'desconectado');
+  const qrFromApi = activeSess ? (activeSess.qrCode || '') : (typeof data.qrCode === 'string' ? data.qrCode : '');
+
   const keepPreviousQr =
     nextStatus === 'aguardando_qr' &&
     qrFromApi.length === 0 &&
@@ -38,13 +49,15 @@ function applyApiStatus(current: ConnectionState, data: ApiStatus): ConnectionSt
         : null,
     telefone:
       nextStatus === 'conectado'
-        ? data.info?.phone || current.telefone
+        ? (activeSess?.telefone || data.info?.phone || current.telefone)
         : '',
-    error: data.error ?? null,
+    error: activeSess?.error || data.error || null,
     conectadoEm:
       nextStatus === 'conectado'
         ? current.conectadoEm ?? new Date().toISOString()
         : null,
+    sessions: incomingSessions,
+    activeSessionId: activeSess ? activeSess.id : currentActiveId,
   };
 }
 
@@ -61,45 +74,131 @@ export function useWhatsAppConnection() {
   const [connection, setConnection] =
     useState<ConnectionState>(mockConnection);
 
-  const iniciarPareamento = useCallback(async (force = false) => {
-    setConnection((currentConnection) => ({
-      ...currentConnection,
-      status: 'conectando',
-      conectadoEm: null,
-      error: null,
-    }));
+  const selecionarSessao = useCallback((sessionId: string) => {
+    setConnection((current) => {
+      const target = current.sessions.find((s) => s.id === sessionId);
+      if (!target) return current;
+      return {
+        ...current,
+        activeSessionId: sessionId,
+        status: target.status,
+        qrCode: target.qrCode || null,
+        telefone: target.telefone || '',
+        error: target.error || null,
+      };
+    });
+  }, []);
+
+  const iniciarPareamento = useCallback(async (force = false, targetSessionId?: string) => {
+    let sessId = targetSessionId;
+    setConnection((currentConnection) => {
+      sessId = sessId || currentConnection.activeSessionId || 'default';
+      const updatedSessions = currentConnection.sessions.map((s) =>
+        s.id === sessId ? { ...s, status: 'conectando' as const, error: null } : s
+      );
+      return {
+        ...currentConnection,
+        status: 'conectando',
+        conectadoEm: null,
+        error: null,
+        sessions: updatedSessions,
+      };
+    });
 
     try {
       await fetch(`${API_BASE}/api/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ force }),
+        body: JSON.stringify({ force, sessionId: sessId }),
       });
     } catch {
       setConnection((currentConnection) => ({
         ...currentConnection,
         status: 'desconectado',
-        error: 'Nao foi possivel falar com o backend.',
+        error: 'Não foi possível falar com o backend.',
       }));
     }
   }, []);
 
-  const desconectar = useCallback(async () => {
-    setConnection((currentConnection) => ({
-      ...currentConnection,
-      status: 'desconectado',
-      conectadoEm: null,
-      qrCode: null,
-      error: null,
-    }));
+  const desconectar = useCallback(async (targetSessionId?: string) => {
+    let sessId = targetSessionId;
+    setConnection((currentConnection) => {
+      sessId = sessId || currentConnection.activeSessionId || 'default';
+      const updatedSessions = currentConnection.sessions.map((s) =>
+        s.id === sessId ? { ...s, status: 'desconectado' as const, qrCode: null, error: null } : s
+      );
+      return {
+        ...currentConnection,
+        status: 'desconectado',
+        conectadoEm: null,
+        qrCode: null,
+        error: null,
+        sessions: updatedSessions,
+      };
+    });
 
     try {
-      await fetch(`${API_BASE}/api/disconnect`, { method: 'POST' });
+      await fetch(`${API_BASE}/api/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessId }),
+      });
     } catch {
       setConnection((currentConnection) => ({
         ...currentConnection,
-        error: 'Nao foi possivel desconectar no backend.',
+        error: 'Não foi possível desconectar no backend.',
       }));
+    }
+  }, []);
+
+  const adicionarSessao = useCallback(async (name?: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.session) {
+          setConnection((current) => ({
+            ...current,
+            sessions: [...current.sessions.filter((s) => s.id !== data.session.id), data.session],
+            activeSessionId: data.session.id,
+            status: data.session.status,
+            qrCode: data.session.qrCode,
+            telefone: data.session.telefone || '',
+            error: null,
+          }));
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao adicionar sessão:', err);
+    }
+  }, []);
+
+  const removerSessao = useCallback(async (sessionId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
+        method: 'DELETE',
+      });
+      if (res.ok) {
+        setConnection((current) => {
+          const remaining = current.sessions.filter((s) => s.id !== sessionId);
+          const nextActive = remaining[0]?.id || 'default';
+          const target = remaining[0];
+          return {
+            ...current,
+            sessions: remaining,
+            activeSessionId: nextActive,
+            status: target ? target.status : 'desconectado',
+            qrCode: target ? target.qrCode || null : null,
+            telefone: target ? target.telefone || '' : '',
+          };
+        });
+      }
+    } catch (err) {
+      console.error('Erro ao remover sessão:', err);
     }
   }, []);
 
@@ -135,7 +234,7 @@ export function useWhatsAppConnection() {
 
         setConnection((currentConnection) => ({
           ...currentConnection,
-          error: currentConnection.error || 'Backend indisponivel. Verifique se o servidor na porta 3001 esta no ar.',
+          error: currentConnection.error || 'Backend indisponível. Verifique se o servidor na porta 3001 está no ar.',
         }));
       }
     }
@@ -163,18 +262,22 @@ export function useWhatsAppConnection() {
 
   return {
     connection,
+    selecionarSessao,
     iniciarPareamento,
     desconectar,
+    adicionarSessao,
+    removerSessao,
   };
 }
 
-export function useWhatsAppContacts(status: ConnectionState['status']) {
-  const [contacts, setContacts] = useState<Contact[]>([]);
+export function useWhatsAppContacts(status: ConnectionState['status'], sessionId?: string) {
+  const [fetchedContacts, setFetchedContacts] = useState<Contact[]>([]);
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
+
+  const contacts = status === 'conectado' ? fetchedContacts : [];
 
   useEffect(() => {
     if (status !== 'conectado') {
-      setContacts([]);
       return undefined;
     }
 
@@ -183,12 +286,15 @@ export function useWhatsAppContacts(status: ConnectionState['status']) {
 
     async function loadContacts() {
       try {
-        const response = await fetch(`${API_BASE}/api/contacts`);
+        const url = sessionId
+          ? `${API_BASE}/api/contacts?sessionId=${encodeURIComponent(sessionId)}`
+          : `${API_BASE}/api/contacts`;
+        const response = await fetch(url);
         if (!response.ok) throw new Error('Falha ao carregar contatos');
         const data = (await response.json()) as { contacts?: Contact[] };
-        if (!cancelled) setContacts(data.contacts ?? []);
+        if (!cancelled) setFetchedContacts(data.contacts ?? []);
       } catch {
-        if (!cancelled) setContacts([]);
+        if (!cancelled) setFetchedContacts([]);
       } finally {
         if (!cancelled) setIsLoadingContacts(false);
       }
@@ -196,8 +302,10 @@ export function useWhatsAppContacts(status: ConnectionState['status']) {
 
     void loadContacts();
 
-    return () => { cancelled = true; };
-  }, [status]);
+    return () => {
+      cancelled = true;
+    };
+  }, [status, sessionId]);
 
   return { contacts, isLoadingContacts };
 }
@@ -210,14 +318,13 @@ type MassPayload = {
   message: string;
   imageFile: File | null;
   contacts?: Contact[];
+  sessionId?: string;
 };
 
 export function useCampaignManager() {
   const [logs, setLogs] = useState<DispatchLog[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [progress, setProgress] = useState(0);
-  // Ref síncrono: atualizado imediatamente, sem esperar render do React.
-  // Impede envios duplicados por double-click ou chamadas concorrentes.
   const isSendingRef = useRef(false);
 
   const dispararCampanha = useCallback(
@@ -225,9 +332,10 @@ export function useCampaignManager() {
       tipo: CampaignType,
       destino: string,
       payload?: MassPayload,
-    ) => {
-      // Guarda síncrono — isSendingRef é imediato, diferente do estado isSending
-      if (isSendingRef.current || !destino.trim()) return;
+    ): Promise<{ success: boolean; message: string; enviados?: number; falhas?: number }> => {
+      if (isSendingRef.current || !destino.trim()) {
+        return { success: false, message: 'Destino ou mensagem inválidos.' };
+      }
       isSendingRef.current = true;
 
       const numbers = payload?.numbers?.length ? payload.numbers : [destino.trim()];
@@ -250,14 +358,20 @@ export function useCampaignManager() {
         const response = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ numbers, message, image: imageBase64 }),
+          body: JSON.stringify({
+            numbers,
+            message,
+            image: imageBase64,
+            sessionId: payload?.sessionId || 'auto',
+          }),
         });
 
         const data = (await response.json()) as {
+          total?: number;
           enviados?: number;
           falhas?: number;
           error?: string;
-          results?: Array<{ number: string; status: 'enviado' | 'falha' }>;
+          results?: Array<{ number: string; status: 'enviado' | 'falha'; chip?: string; error?: string }>;
         };
 
         setProgress(100);
@@ -268,23 +382,50 @@ export function useCampaignManager() {
           const newLogs: DispatchLog[] = data.results.map((r, i) => ({
             id: `log-${Date.now()}-${i}`,
             tipo,
-            destinatario: contactsMap.get(r.number) ?? r.number,
+            destinatario: (contactsMap.get(r.number) ?? r.number) + (r.chip ? ` (${r.chip})` : ''),
             horario: now,
             resultado: r.status === 'enviado' ? 'sucesso' : 'falha',
           }));
           setLogs((prev) => [...newLogs, ...prev]);
+
+          if (data.falhas && data.falhas > 0 && data.enviados === 0) {
+            const firstErr = data.results.find((r) => r.status === 'falha')?.error;
+            return {
+              success: false,
+              message: firstErr || 'Falha ao enviar mensagem pelo WhatsApp.',
+              enviados: data.enviados,
+              falhas: data.falhas,
+            };
+          }
+
+          const chipInfo = data.results[0]?.chip ? ` via ${data.results[0].chip}` : '';
+          return {
+            success: true,
+            message: `Mensagem enviada com sucesso${chipInfo}!`,
+            enviados: data.enviados,
+            falhas: data.falhas,
+          };
         } else {
           const ok = response.ok && !data.error;
           setLogs((prev) => [
             { id: `log-${Date.now()}`, tipo, destinatario: destino.trim(), horario: now, resultado: ok ? 'sucesso' : 'falha' },
             ...prev,
           ]);
+
+          return {
+            success: ok,
+            message: ok ? 'Mensagem enviada com sucesso!' : data.error || 'Erro ao processar envio.',
+          };
         }
-      } catch {
+      } catch (err: any) {
         setLogs((prev) => [
           { id: `log-${Date.now()}`, tipo, destinatario: destino.trim(), horario: new Date().toISOString(), resultado: 'falha' },
           ...prev,
         ]);
+        return {
+          success: false,
+          message: err?.message || 'Falha de comunicação com o servidor.',
+        };
       } finally {
         window.setTimeout(() => {
           isSendingRef.current = false;
@@ -293,7 +434,7 @@ export function useCampaignManager() {
         }, 400);
       }
     },
-    [], // sem dependência de isSending — usamos a ref que é sempre atual
+    [],
   );
 
   return {
