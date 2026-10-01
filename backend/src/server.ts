@@ -12,6 +12,7 @@ import {
   type DispatchJobData,
   type DispatchResult,
 } from './queues/dispatchQueue.js';
+import { userManager, type UserRole, type SafeUser } from './auth/userManager.js';
 
 const logger = pino({
   level: config.LOG_LEVEL,
@@ -96,6 +97,130 @@ async function main() {
     });
   });
 
+  // ── Helpers de RBAC & Autenticação ──────────────────────────────────────────
+  function getCurrentUser(req: any): SafeUser {
+    const userId = req.headers['x-user-id'] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (userId) {
+      const u = userManager.getById(String(userId));
+      if (u) return u;
+    }
+    // Fallback: seleciona o primeiro admin padrão
+    const all = userManager.getAll();
+    return all.find((u) => u.role === 'ADMIN') || all[0];
+  }
+
+  function checkRole(req: any, allowedRoles: UserRole[], reply: any): boolean {
+    const user = getCurrentUser(req);
+    if (!user || !allowedRoles.includes(user.role)) {
+      reply.status(403).send({
+        error: `Acesso negado. Ação restrita para papéis: [${allowedRoles.join(', ')}]. Seu papel atual é [${user?.role || 'DESCONHECIDO'}].`,
+      });
+      return false;
+    }
+    return true;
+  }
+
+  // ── Rotas de Autenticação e Gestão de Usuários (RBAC) ───────────────────────
+
+  // GET /api/auth/me — Obtém dados do usuário atual e seus privilégios
+  server.get('/api/auth/me', async (req) => {
+    const user = getCurrentUser(req);
+    return { user };
+  });
+
+  // POST /api/auth/login — Login ou troca de usuário ativo
+  server.post('/api/auth/login', async (req, reply) => {
+    const schema = z.object({
+      email: z.string().email('E-mail inválido'),
+      password: z.string().optional(),
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0].message });
+    }
+
+    const user = userManager.authenticate(parsed.data.email, parsed.data.password);
+    if (!user) {
+      return reply.status(401).send({ error: 'Credenciais inválidas.' });
+    }
+
+    return { ok: true, user, token: user.id };
+  });
+
+  // POST /api/auth/register — Cadastro de novos usuários (Por padrão recebem nível OPERATOR)
+  server.post('/api/auth/register', async (req, reply) => {
+    const schema = z.object({
+      name: z.string().min(2, 'Nome deve ter no mínimo 2 caracteres.'),
+      email: z.string().email('E-mail inválido.'),
+      password: z.string().min(6, 'Senha deve ter no mínimo 6 caracteres.').optional(),
+      role: z.enum(['ADMIN', 'OPERATOR', 'VIEWER']).optional(),
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0].message });
+    }
+
+    try {
+      const caller = getCurrentUser(req);
+      // Novos usuários cadastrados por padrão recebem OPERATOR. Apenas ADMIN pode especificar outro papel.
+      const assignedRole = (caller.role === 'ADMIN' && parsed.data.role) ? parsed.data.role : 'OPERATOR';
+      const user = userManager.register(parsed.data.name, parsed.data.email, parsed.data.password, assignedRole);
+      reply.status(201);
+      return { ok: true, user, token: user.id };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
+    }
+  });
+
+  // GET /api/users — Lista todos os usuários e seus níveis de acesso
+  server.get('/api/users', async (req) => {
+    const users = userManager.getAll();
+    const currentUser = getCurrentUser(req);
+    return { users, currentUser };
+  });
+
+  // PATCH /api/users/:id/role — Atualiza o nível de acesso de um usuário (Exclusivo ADMIN)
+  server.patch('/api/users/:id/role', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN'], reply)) return;
+
+    const { id } = req.params as { id: string };
+    const schema = z.object({
+      role: z.enum(['ADMIN', 'OPERATOR', 'VIEWER']),
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: parsed.error.issues[0].message });
+    }
+
+    try {
+      const caller = getCurrentUser(req);
+      const updated = userManager.updateRole(id, parsed.data.role, caller.id);
+      return { ok: true, user: updated };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
+    }
+  });
+
+  // DELETE /api/users/:id — Remove um usuário da plataforma (Exclusivo ADMIN)
+  server.delete('/api/users/:id', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN'], reply)) return;
+
+    const { id } = req.params as { id: string };
+    try {
+      const caller = getCurrentUser(req);
+      const ok = userManager.deleteUser(id, caller.id);
+      if (!ok) {
+        return reply.status(404).send({ error: 'Usuário não encontrado.' });
+      }
+      return { ok: true, removed: id };
+    } catch (err: any) {
+      return reply.status(400).send({ error: err.message });
+    }
+  });
+
   // ── Rotas REST ─────────────────────────────────────────────────────────────
 
   // GET /api/health — Métricas de performance e memória
@@ -164,8 +289,10 @@ async function main() {
     };
   });
 
-  // POST /api/sessions — Cria uma nova sessão
+  // POST /api/sessions — Cria uma nova sessão (Exclusivo ADMIN)
   server.post('/api/sessions', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN'], reply)) return;
+
     const body = (req.body as any) || {};
     const name = body.name;
     const session = baileysManager.createSession(name);
@@ -173,8 +300,10 @@ async function main() {
     return { session: session.toJSON() };
   });
 
-  // DELETE /api/sessions/:sessionId — Remove uma sessão
+  // DELETE /api/sessions/:sessionId — Remove uma sessão (Exclusivo ADMIN)
   server.delete('/api/sessions/:sessionId', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN'], reply)) return;
+
     const { sessionId } = req.params as { sessionId: string };
     if (sessionId === 'default') {
       return reply.status(400).send({ error: 'O Chip principal (default) não pode ser excluído.' });
@@ -217,15 +346,19 @@ async function main() {
     return { qr: session.qrCode, sessionId: session.id };
   });
 
-  // POST /api/connect — Inicia conexão/pareamento
-  server.post('/api/connect', async (req) => {
+  // POST /api/connect — Inicia conexão/pareamento (ADMIN e OPERATOR)
+  server.post('/api/connect', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
+
     const { force, sessionId = 'default' } = (req.body as any) || {};
     const session = await baileysManager.connectSession(sessionId, force);
     return { ok: true, status: session.status, session: session.toJSON() };
   });
 
-  // POST /api/disconnect — Desconecta sessão
+  // POST /api/disconnect — Desconecta sessão (Exclusivo ADMIN)
   server.post('/api/disconnect', async (req, reply) => {
+    if (!checkRole(req, ['ADMIN'], reply)) return;
+
     const body = (req.body as any) || {};
     const query = (req.query as any) || {};
     const sessionId = body.sessionId || query.sessionId || 'default';
@@ -238,7 +371,7 @@ async function main() {
     return { ok: true, status: 'desconectado', session: session.toJSON() };
   });
 
-  // GET /api/contacts — Contatos da sessão conectada (com cache no Redis)
+  // GET /api/contacts — Contatos da sessão conectada (salvos e não salvos com cache no Redis)
   server.get('/api/contacts', async (req, reply) => {
     const query = req.query as { sessionId?: string; refresh?: string };
     const sessionId = query.sessionId;
@@ -254,35 +387,57 @@ async function main() {
 
     const forceRefresh = query.refresh === '1';
 
-    // Tenta pegar do Redis
+    // Tenta pegar do Redis se não for refresh forçado
     if (!forceRefresh) {
       const cached = await RedisService.getContacts(session.id);
       if (cached && cached.length > 0) {
-        return { contacts: cached, cached: true };
+        const salvosCount = cached.filter((c: any) => c.salvo).length;
+        return {
+          contacts: cached,
+          total: cached.length,
+          salvos: salvosCount,
+          naoSalvos: cached.length - salvosCount,
+          cached: true,
+        };
       }
     }
 
-    // Contatos sincronizados pelo Baileys
-    const contactsList = Array.from(session.contacts.values()).sort((a, b) =>
-      a.nomeCompleto.localeCompare(b.nomeCompleto, 'pt-BR')
-    );
+    // Contatos sincronizados pelo Baileys (salvos da agenda + não salvos de conversas)
+    const contactsList = Array.from(session.contacts.values()).sort((a, b) => {
+      // Prioriza contatos salvos no topo
+      if (a.salvo !== b.salvo) {
+        return a.salvo ? -1 : 1;
+      }
+      return a.nomeCompleto.localeCompare(b.nomeCompleto, 'pt-BR');
+    });
 
-    // Salva no Redis
+    // Salva no Redis (cache de 24h)
     if (contactsList.length > 0) {
-      await RedisService.setContacts(session.id, contactsList, 600);
+      await RedisService.setContacts(session.id, contactsList, 86400);
     }
 
-    return { contacts: contactsList };
+    const salvosCount = contactsList.filter((c) => c.salvo).length;
+
+    return {
+      contacts: contactsList,
+      total: contactsList.length,
+      salvos: salvosCount,
+      naoSalvos: contactsList.length - salvosCount,
+    };
   });
 
-  // POST /api/send — Disparo em massa via BullMQ + Redis com Round-Robin Multi-Chip
+  // POST /api/send — Disparo em massa via BullMQ + Redis com Round-Robin Multi-Chip e Anti-Spam
   server.post('/api/send', async (req, reply) => {
+    // Permite apenas ADMIN e OPERATOR realizarem envios (VIEWER apenas visualiza)
+    if (!checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
+
     const sendSchema = z.object({
       numbers: z.array(z.string()).min(1, 'Pelo menos um número deve ser informado.'),
       message: z.string().min(1, 'Mensagem é obrigatória.'),
       image: z.string().nullable().optional(),
       imageBase64: z.string().nullable().optional(),
       sessionId: z.string().optional(),
+      intervalSeconds: z.coerce.number().min(1).max(120).default(5).optional(),
     });
 
     const parsed = sendSchema.safeParse(req.body);
@@ -290,8 +445,9 @@ async function main() {
       return reply.status(400).send({ error: parsed.error.issues[0].message });
     }
 
-    const { numbers, message, image, imageBase64, sessionId } = parsed.data;
+    const { numbers, message, image, imageBase64, sessionId, intervalSeconds = 5 } = parsed.data;
     const media = image || imageBase64 || null;
+    const delayMs = intervalSeconds * 1000;
 
     let availableSessions: WhatsAppSession[] = [];
     if (sessionId && sessionId !== 'auto') {
@@ -312,12 +468,13 @@ async function main() {
     const campaignId = `camp_${Date.now()}`;
 
     logger.info(
-      `Disparando campanha ${campaignId} para ${uniqueNumbers.length} contato(s) usando ${availableSessions.length} chip(s) (${availableSessions.map((s) => s.name).join(', ')})`
+      `Disparando campanha ${campaignId} para ${uniqueNumbers.length} contato(s) usando ${availableSessions.length} chip(s) com intervalo anti-spam de ${intervalSeconds}s`
     );
 
-    // Prepara jobs BullMQ para execução estruturada e resiliente
-    const jobsData: { name: string; data: DispatchJobData }[] = uniqueNumbers.map((number, idx) => {
+    // Prepara jobs BullMQ para execução estruturada e escalonada contra spam
+    const jobsData: { name: string; data: DispatchJobData; opts?: any }[] = uniqueNumbers.map((number, idx) => {
       const activeSession = availableSessions[idx % availableSessions.length];
+      const stepIndex = Math.floor(idx / Math.max(1, availableSessions.length));
       return {
         name: `send-${number}`,
         data: {
@@ -327,6 +484,10 @@ async function main() {
           image: media,
           sessionId: activeSession.id,
           chipName: activeSession.name,
+          delayMs,
+        },
+        opts: {
+          delay: stepIndex * delayMs,
         },
       };
     });
@@ -335,10 +496,11 @@ async function main() {
     const enqueuedJobs = await dispatchQueue.addBulk(jobsData);
 
     // Processa os jobs e acumula resultados para retornar à UI sem travamento
+    const waitTimeoutMs = Math.max(90000, Math.ceil(uniqueNumbers.length / Math.max(1, availableSessions.length)) * delayMs + 30000);
     const results: DispatchResult[] = [];
     for (const job of enqueuedJobs) {
       try {
-        const res = await job.waitUntilFinished(dispatchQueueEvents, 60000);
+        const res = await job.waitUntilFinished(dispatchQueueEvents, waitTimeoutMs);
         results.push(res);
       } catch (err: any) {
         results.push({

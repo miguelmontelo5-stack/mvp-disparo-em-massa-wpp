@@ -21,11 +21,12 @@ import {
   Trash2,
   Unplug,
   Users,
+  RotateCw,
   XCircle,
   Zap,
 } from 'lucide-react';
 
-import type { ConnectionState, Contact, DispatchLog, SessionItem } from './mockData';
+import type { ConnectionState, Contact, DispatchLog, SessionItem, User, UserRole } from './mockData';
 
 function PageHeader({ title, description }: { title: string; description: string }) {
   return (
@@ -345,6 +346,7 @@ interface OverviewViewProps {
   onSelectSession?: (sessionId: string) => void;
   onAddSession?: (name?: string) => void;
   onRemoveSession?: (sessionId: string) => void;
+  userRole?: UserRole;
 }
 
 export function OverviewView({
@@ -355,6 +357,7 @@ export function OverviewView({
   onSelectSession,
   onAddSession,
   onRemoveSession,
+  userRole: _userRole = 'VIEWER',
 }: OverviewViewProps) {
   return (
     <div className="flex flex-col">
@@ -387,14 +390,16 @@ interface QuickSendViewProps {
   ) => Promise<{ success: boolean; message: string }> | void;
   isSending: boolean;
   progress: number;
+  userRole?: UserRole;
 }
 
-export function QuickSendView({ sessions, onSend, isSending, progress }: QuickSendViewProps) {
+export function QuickSendView({ sessions, onSend, isSending, progress, userRole = 'VIEWER' }: QuickSendViewProps) {
   const [destination, setDestination] = useState('');
   const [message, setMessage] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState('auto');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const canSend = destination.trim().length > 0 && message.trim().length > 0;
+  const isViewer = userRole === 'VIEWER';
+  const canSend = !isViewer && destination.trim().length > 0 && message.trim().length > 0;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -486,9 +491,14 @@ export function QuickSendView({ sessions, onSend, isSending, progress }: QuickSe
                 <textarea id="qs-message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={isSending} placeholder="Digite a mensagem que será enviada..." rows={5} className="w-full resize-none rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50" />
               </div>
               {isSending && <SendProgress progress={progress} />}
+              {isViewer && (
+                <p className="text-center text-xs text-red-400/80 border border-red-400/20 bg-red-400/5 rounded-xl py-2 px-3">
+                  🔒 Você possui nível VIEWER. Solicite ao administrador a permissão de OPERATOR para enviar mensagens.
+                </p>
+              )}
               <button type="submit" disabled={isSending || !canSend} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3.5 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500">
                 <Send aria-hidden="true" size={18} />
-                {isSending ? 'Enviando...' : 'Enviar mensagem'}
+                {isSending ? 'Enviando...' : isViewer ? '🔒 Sem permissão' : 'Enviar mensagem'}
               </button>
             </form>
           </section>
@@ -502,18 +512,37 @@ interface MassCampaignViewProps {
   sessions?: SessionItem[];
   contactsList: Contact[];
   isLoadingContacts?: boolean;
+  onRefreshContacts?: () => void;
   onSend: (
     destino: string,
     contacts: Contact[],
     image: File | null,
     message: string,
-    sessionId?: string
+    sessionId?: string,
+    intervalSeconds?: number
   ) => Promise<{ success: boolean; message: string }> | void;
   isSending: boolean;
   progress: number;
+  userRole?: UserRole;
 }
 
-export function MassCampaignView({ sessions, contactsList, isLoadingContacts = false, onSend, isSending, progress }: MassCampaignViewProps) {
+const INTERVAL_PRESETS = [
+  { value: 3,  label: '3s',  desc: 'Moderado', color: 'text-amber-400' },
+  { value: 5,  label: '5s',  desc: 'Recomendado', color: 'text-[#deff9a]' },
+  { value: 10, label: '10s', desc: 'Seguro', color: 'text-blue-400' },
+  { value: 15, label: '15s', desc: 'Ultra Seguro', color: 'text-emerald-400' },
+];
+
+export function MassCampaignView({
+  sessions,
+  contactsList,
+  isLoadingContacts = false,
+  onRefreshContacts,
+  onSend,
+  isSending,
+  progress,
+  userRole = 'VIEWER',
+}: MassCampaignViewProps) {
   const [selectedSessionId, setSelectedSessionId] = useState('auto');
   const [imageFile, setImageFile]             = useState<File | null>(null);
   const [imagePreviewUrl, setImagePreviewUrl] = useState<string | null>(null);
@@ -521,10 +550,21 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
   const listScrollRef  = useRef<HTMLDivElement>(null);
   const [selectedContacts, setSelectedContacts] = useState<string[]>([]);
   const [searchQuery, setSearchQuery]           = useState('');
+  const [filterTab, setFilterTab]               = useState<'todos' | 'salvos' | 'nao_salvos'>('todos');
   const [message, setMessage] = useState('');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [intervalSeconds, setIntervalSeconds] = useState(5);
+  const isViewer = userRole === 'VIEWER';
+
+  const totalCount = contactsList.length;
+  const salvosCount = contactsList.filter((c) => c.salvo).length;
+  const naoSalvosCount = totalCount - salvosCount;
 
   const filteredContacts = contactsList.filter((c) => {
+    // Filtro por categoria (todos, salvos, não salvos)
+    if (filterTab === 'salvos' && !c.salvo) return false;
+    if (filterTab === 'nao_salvos' && c.salvo) return false;
+
     const query = searchQuery.toLowerCase();
     if (c.nomeCompleto.toLowerCase().includes(query)) return true;
     
@@ -535,7 +575,9 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
   });
   const allSelected  = filteredContacts.length > 0 && filteredContacts.every((c) => selectedContacts.includes(c.id));
   const someSelected = filteredContacts.some((c) => selectedContacts.includes(c.id));
-  const canSend = selectedContacts.length > 0 && message.trim().length > 0;
+  const canSend = !isViewer && selectedContacts.length > 0 && message.trim().length > 0;
+  const estimatedDurationSec = selectedContacts.length * intervalSeconds;
+  const estimatedMinutes = Math.ceil(estimatedDurationSec / 60);
 
   // Reseta o scroll do container para o topo sempre que a busca mudar,
   // evitando que itens antigos fiquem visiveis na viewport por causa da posicao de scroll.
@@ -577,7 +619,7 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
       setFeedback(null);
       const contactObjects = contactsList.filter((c) => selectedContacts.includes(c.id));
       const destino = `${contactObjects.length} contato${contactObjects.length !== 1 ? 's' : ''}`;
-      const res = await onSend(destino, contactObjects, imageFile, message.trim(), selectedSessionId);
+      const res = await onSend(destino, contactObjects, imageFile, message.trim(), selectedSessionId, intervalSeconds);
       if (res) {
         if (res.success) {
           setFeedback({ type: 'success', text: res.message || 'Campanha disparada com sucesso!' });
@@ -696,14 +738,79 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
               {/* 2 - Contacts selection */}
               <div>
                 <div className="mb-2 flex items-center justify-between gap-3">
-                  <label className="flex items-center gap-1.5 text-sm font-medium text-zinc-300">
-                    <Users size={14} className="text-zinc-500" aria-hidden="true" />
-                    Destinatarios
-                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="flex items-center gap-1.5 text-sm font-medium text-zinc-300">
+                      <Users size={14} className="text-zinc-500" aria-hidden="true" />
+                      Destinatarios
+                    </label>
+                    {onRefreshContacts && (
+                      <button
+                        type="button"
+                        onClick={onRefreshContacts}
+                        disabled={isLoadingContacts}
+                        title="Sincronizar e recarregar contatos do chip"
+                        className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] font-medium text-zinc-400 transition hover:border-[#deff9a]/30 hover:bg-[#deff9a]/10 hover:text-[#deff9a] disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <RotateCw size={11} className={isLoadingContacts ? 'animate-spin text-[#deff9a]' : ''} />
+                        <span>Sincronizar</span>
+                      </button>
+                    )}
+                  </div>
                   <span className={`text-xs font-medium transition-colors ${selectedContacts.length > 0 ? 'text-[#deff9a]' : 'text-zinc-600'}`}>
                     {selectedContacts.length} de {contactsList.length} selecionados
                   </span>
                 </div>
+
+                {/* Filter Tabs: Todos, Salvos, Não Salvos */}
+                {contactsList.length > 0 && (
+                  <div className="mb-2.5 flex items-center gap-1.5 rounded-xl border border-white/[0.06] bg-black/40 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setFilterTab('todos')}
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${
+                        filterTab === 'todos'
+                          ? 'bg-white/10 text-white shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      <span>Todos</span>
+                      <span className="rounded-md bg-white/10 px-1.5 py-0.2 text-[10px] text-zinc-300">
+                        {totalCount}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFilterTab('salvos')}
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${
+                        filterTab === 'salvos'
+                          ? 'bg-[#deff9a]/10 text-[#deff9a] ring-1 ring-inset ring-[#deff9a]/20'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      <span>Salvos</span>
+                      <span className="rounded-md bg-[#deff9a]/10 px-1.5 py-0.2 text-[10px] text-[#deff9a]">
+                        {salvosCount}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setFilterTab('nao_salvos')}
+                      className={`flex flex-1 items-center justify-center gap-1.5 rounded-lg py-1.5 text-xs font-medium transition-all ${
+                        filterTab === 'nao_salvos'
+                          ? 'bg-white/10 text-zinc-200 shadow-sm'
+                          : 'text-zinc-500 hover:text-zinc-300'
+                      }`}
+                    >
+                      <span>Não salvos</span>
+                      <span className="rounded-md bg-white/10 px-1.5 py-0.2 text-[10px] text-zinc-400">
+                        {naoSalvosCount}
+                      </span>
+                    </button>
+                  </div>
+                )}
+
                 <div className="overflow-hidden rounded-2xl border border-white/10 bg-black/20">
                   {/* Search */}
                   <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2.5">
@@ -723,17 +830,17 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
                     )}
                   </div>
                   {/* Select-all */}
-                  {!isLoadingContacts && contactsList.length > 0 && (
+                  {!isLoadingContacts && filteredContacts.length > 0 && (
                     <div className="flex items-center justify-between border-b border-white/[0.06] px-3 py-2.5">
                       <button type="button" onClick={handleToggleAll} className="flex items-center gap-2.5 text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-200">
                         <span className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${allSelected ? 'border-[#deff9a] bg-[#deff9a]' : someSelected ? 'border-white/30 bg-white/10' : 'border-white/20 bg-transparent'}`}>
                           {allSelected && <Check size={10} className="text-black" strokeWidth={3} />}
                           {someSelected && !allSelected && <span className="block h-[5px] w-[5px] rounded-[1px] bg-zinc-300" />}
                         </span>
-                        Selecionar todos
+                        Selecionar {filterTab === 'salvos' ? 'salvos' : filterTab === 'nao_salvos' ? 'não salvos' : 'todos'} ({filteredContacts.length})
                       </button>
                       {filteredContacts.length !== contactsList.length && (
-                        <span className="text-xs text-zinc-700">{filteredContacts.length} resultado{filteredContacts.length !== 1 ? 's' : ''}</span>
+                        <span className="text-xs text-zinc-700">{filteredContacts.length} exibido{filteredContacts.length !== 1 ? 's' : ''}</span>
                       )}
                     </div>
                   )}
@@ -742,15 +849,15 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
                     {isLoadingContacts ? (
                       <div className="flex flex-col items-center justify-center gap-3 py-8 text-center">
                         <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-[#deff9a]" />
-                        <p className="text-sm text-zinc-500">Carregando contatos do aparelho...</p>
+                        <p className="text-sm text-zinc-500">Carregando contatos e conversas do chip...</p>
                       </div>
                     ) : filteredContacts.length === 0 ? (
                       <div className="flex flex-col items-center justify-center gap-2 py-8 text-center">
                         <Search size={22} className="text-zinc-800" />
                         <p className="text-sm text-zinc-600">
                           {contactsList.length === 0
-                            ? 'Conecte o WhatsApp para carregar os contatos.'
-                            : 'Nenhum contato encontrado para essa busca.'}
+                            ? 'Conecte o WhatsApp para carregar contatos salvos e conversas.'
+                            : 'Nenhum contato encontrado nesta categoria ou busca.'}
                         </p>
                       </div>
                     ) : (
@@ -773,6 +880,15 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
                               <p className={`truncate text-sm font-medium transition-colors ${isSelected ? 'text-zinc-100' : 'text-zinc-400'}`}>{contact.nomeCompleto}</p>
                               <p className="text-xs text-zinc-600">{contact.telefone}</p>
                             </div>
+                            <span
+                              className={`shrink-0 rounded-md px-2 py-0.5 text-[10px] font-medium border transition-colors ${
+                                contact.salvo
+                                  ? 'border-[#deff9a]/20 bg-[#deff9a]/10 text-[#deff9a]'
+                                  : 'border-white/10 bg-white/5 text-zinc-400'
+                              }`}
+                            >
+                              {contact.salvo ? 'Salvo' : 'Não salvo'}
+                            </span>
                           </div>
                         );
                       })
@@ -790,14 +906,329 @@ export function MassCampaignView({ sessions, contactsList, isLoadingContacts = f
                 <textarea id="mass-message" value={message} onChange={(e) => setMessage(e.target.value)} disabled={isSending} placeholder="Digite a mensagem que sera disparada para os contatos selecionados..." rows={4} className="w-full resize-none rounded-xl border border-white/10 bg-[#050505] px-4 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10 disabled:cursor-not-allowed disabled:opacity-50" />
               </div>
 
+              {/* 4 - Anti-Spam Interval Selector */}
+              <div>
+                <p className="mb-2 text-sm font-medium text-zinc-300">Intervalo entre envios (Anti-Spam)</p>
+                <div className="grid grid-cols-4 gap-2">
+                  {INTERVAL_PRESETS.map((preset) => {
+                    const isActive = intervalSeconds === preset.value;
+                    return (
+                      <button
+                        key={preset.value}
+                        type="button"
+                        onClick={() => setIntervalSeconds(preset.value)}
+                        disabled={isSending}
+                        className={`flex flex-col items-center gap-1 rounded-xl border px-2 py-3 text-center transition-all ${
+                          isActive
+                            ? 'border-[#deff9a]/40 bg-[#deff9a]/10 ring-1 ring-[#deff9a]/20 shadow-[0_0_12px_rgba(222,255,154,0.12)]'
+                            : 'border-white/10 bg-black/20 hover:border-white/20 hover:bg-white/[0.03]'
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <span className={`text-base font-bold ${isActive ? 'text-[#deff9a]' : 'text-zinc-300'}`}>
+                          {preset.label}
+                        </span>
+                        <span className={`text-[10px] font-medium ${isActive ? preset.color : 'text-zinc-600'}`}>
+                          {preset.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                {selectedContacts.length > 0 && (
+                  <div className="mt-2.5 flex items-center justify-between rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2">
+                    <span className="text-xs text-zinc-500">Duração estimada</span>
+                    <span className="text-xs font-medium text-zinc-300">
+                      {selectedContacts.length} contato{selectedContacts.length !== 1 ? 's' : ''} × {intervalSeconds}s ≈{' '}
+                      <span className="text-[#deff9a]">{estimatedMinutes} min</span>
+                    </span>
+                  </div>
+                )}
+                <p className="mt-1.5 text-[11px] text-zinc-600">
+                  ⏱ Intervalos maiores reduzem o risco de bloqueio pelo WhatsApp. O sistema aplica variação aleatória (jitter) automaticamente.
+                </p>
+              </div>
+
               {isSending && <SendProgress progress={progress} />}
 
+              {isViewer && (
+                <p className="text-center text-xs text-red-400/80 border border-red-400/20 bg-red-400/5 rounded-xl py-2 px-3">
+                  🔒 Você possui nível VIEWER. Solicite ao administrador a permissão de OPERATOR para disparar campanhas.
+                </p>
+              )}
               <button type="submit" disabled={isSending || !canSend} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#deff9a] px-5 py-3.5 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] focus:outline-none focus:ring-2 focus:ring-[#deff9a]/60 focus:ring-offset-2 focus:ring-offset-[#121212] disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500">
                 <Zap aria-hidden="true" size={18} />
-                {isSending ? 'Disparando...' : selectedContacts.length > 0 ? `Disparar para ${selectedContacts.length} contato${selectedContacts.length !== 1 ? 's' : ''}` : 'Disparar campanha'}
+                {isSending ? 'Disparando...' : isViewer ? '🔒 Sem permissão' : selectedContacts.length > 0 ? `Disparar para ${selectedContacts.length} contato${selectedContacts.length !== 1 ? 's' : ''}` : 'Disparar campanha'}
               </button>
             </form>
           </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── TeamView — Gestão de Equipe (Apenas ADMIN) ────────────────────── */
+
+interface TeamViewProps {
+  users: User[];
+  currentUser: User | null;
+  isLoading: boolean;
+  onRegister: (name: string, email: string, role?: UserRole) => Promise<User>;
+  onUpdateRole: (userId: string, newRole: UserRole) => Promise<User>;
+  onDelete: (userId: string) => Promise<void>;
+  onRefresh: () => void;
+}
+
+const ROLE_OPTIONS: { value: UserRole; label: string; desc: string }[] = [
+  { value: 'ADMIN', label: 'Admin', desc: 'Acesso total: chips, disparos, equipe' },
+  { value: 'OPERATOR', label: 'Operador', desc: 'Conecta chips e realiza disparos' },
+  { value: 'VIEWER', label: 'Visualizador', desc: 'Apenas visualiza dados e histórico' },
+];
+
+const roleBadgeColors: Record<UserRole, string> = {
+  ADMIN: 'border-[#deff9a]/30 bg-[#deff9a]/10 text-[#deff9a]',
+  OPERATOR: 'border-blue-400/30 bg-blue-400/10 text-blue-300',
+  VIEWER: 'border-zinc-400/30 bg-zinc-400/10 text-zinc-400',
+};
+
+export function TeamView({
+  users,
+  currentUser,
+  isLoading,
+  onRegister,
+  onUpdateRole,
+  onDelete,
+  onRefresh,
+}: TeamViewProps) {
+  const [showForm, setShowForm] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newRole, setNewRole] = useState<UserRole>('OPERATOR');
+  const [formError, setFormError] = useState<string | null>(null);
+  const [formSuccess, setFormSuccess] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function handleRegister(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!newName.trim() || !newEmail.trim()) return;
+    setFormError(null);
+    setFormSuccess(null);
+    setIsSubmitting(true);
+    try {
+      const user = await onRegister(newName.trim(), newEmail.trim(), newRole);
+      setFormSuccess(`Usuário "${user.name}" cadastrado com sucesso como ${user.role}.`);
+      setNewName('');
+      setNewEmail('');
+      setNewRole('OPERATOR');
+      setShowForm(false);
+    } catch (err: any) {
+      setFormError(err.message || 'Erro ao cadastrar usuário.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function handleRoleChange(userId: string, role: UserRole) {
+    try {
+      await onUpdateRole(userId, role);
+    } catch (err: any) {
+      alert(err.message || 'Erro ao alterar permissão.');
+    }
+  }
+
+  async function handleDelete(userId: string, userName: string) {
+    if (!window.confirm(`Deseja realmente remover o usuário "${userName}"? Esta ação é irreversível.`)) return;
+    try {
+      await onDelete(userId);
+    } catch (err: any) {
+      alert(err.message || 'Erro ao excluir usuário.');
+    }
+  }
+
+  return (
+    <div className="flex flex-col">
+      <PageHeader title="Equipe" description="Gerencie os membros da sua equipe e seus níveis de acesso." />
+      <div className="flex flex-1 items-start justify-center p-4 sm:p-8 lg:pt-10">
+        <div className="w-full max-w-2xl space-y-6">
+
+          {/* Feedback messages */}
+          {formSuccess && (
+            <div className="flex items-start gap-3 rounded-2xl border border-[#deff9a]/40 bg-[#deff9a]/10 p-4 text-sm text-[#deff9a]">
+              <CheckCircle2 size={20} className="shrink-0 mt-0.5" />
+              <p className="flex-1 font-medium">{formSuccess}</p>
+              <button type="button" onClick={() => setFormSuccess(null)} className="text-xs opacity-60 hover:opacity-100">✕</button>
+            </div>
+          )}
+          {formError && (
+            <div className="flex items-start gap-3 rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-sm text-red-400">
+              <AlertCircle size={20} className="shrink-0 mt-0.5" />
+              <p className="flex-1 font-medium">{formError}</p>
+              <button type="button" onClick={() => setFormError(null)} className="text-xs opacity-60 hover:opacity-100">✕</button>
+            </div>
+          )}
+
+          {/* Header + Add Button */}
+          <section className="rounded-3xl border border-white/10 bg-[#121212] shadow-2xl shadow-black/40">
+            <header className="flex items-center justify-between gap-4 border-b border-white/10 px-6 py-5">
+              <div className="flex items-center gap-3">
+                <div className="grid h-11 w-11 place-items-center rounded-xl bg-[#deff9a]/10 text-[#deff9a]">
+                  <Users size={22} />
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#deff9a]">Equipe</p>
+                  <h2 className="mt-1 text-xl font-semibold text-white">Membros ({users.length})</h2>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onRefresh}
+                  disabled={isLoading}
+                  className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-zinc-400 transition hover:border-[#deff9a]/30 hover:bg-[#deff9a]/10 hover:text-[#deff9a] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RotateCw size={13} className={isLoading ? 'animate-spin' : ''} />
+                  Atualizar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowForm(!showForm)}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#deff9a] px-4 py-2 text-xs font-semibold text-black transition hover:bg-[#e7ffb6]"
+                >
+                  <Plus size={14} />
+                  Novo Membro
+                </button>
+              </div>
+            </header>
+
+            {/* New member form */}
+            {showForm && (
+              <div className="border-b border-white/10 bg-black/20 px-6 py-5">
+                <form className="space-y-4" onSubmit={handleRegister}>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div>
+                      <label htmlFor="team-name" className="mb-1.5 block text-xs font-medium text-zinc-400">Nome</label>
+                      <input
+                        id="team-name"
+                        type="text"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder="Ex.: João Silva"
+                        className="w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="team-email" className="mb-1.5 block text-xs font-medium text-zinc-400">E-mail</label>
+                      <input
+                        id="team-email"
+                        type="email"
+                        value={newEmail}
+                        onChange={(e) => setNewEmail(e.target.value)}
+                        placeholder="joao@empresa.com"
+                        className="w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label htmlFor="team-role" className="mb-1.5 block text-xs font-medium text-zinc-400">Nível de Acesso</label>
+                    <select
+                      id="team-role"
+                      value={newRole}
+                      onChange={(e) => setNewRole(e.target.value as UserRole)}
+                      className="w-full rounded-xl border border-white/10 bg-[#050505] px-3 py-2.5 text-sm text-white outline-none transition focus:border-[#deff9a]/60 focus:ring-4 focus:ring-[#deff9a]/10"
+                    >
+                      {ROLE_OPTIONS.map((r) => (
+                        <option key={r.value} value={r.value}>{r.label} — {r.desc}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="submit"
+                      disabled={isSubmitting || !newName.trim() || !newEmail.trim()}
+                      className="inline-flex items-center gap-2 rounded-xl bg-[#deff9a] px-5 py-2.5 text-sm font-semibold text-black transition hover:bg-[#e7ffb6] disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+                    >
+                      {isSubmitting ? 'Cadastrando...' : 'Cadastrar'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowForm(false)}
+                      className="text-xs font-medium text-zinc-500 transition hover:text-zinc-300"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </form>
+              </div>
+            )}
+
+            {/* Users list */}
+            <div className="divide-y divide-white/[0.06]">
+              {isLoading && users.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-center">
+                  <div className="h-6 w-6 animate-spin rounded-full border-2 border-zinc-700 border-t-[#deff9a]" />
+                  <p className="text-sm text-zinc-500">Carregando equipe...</p>
+                </div>
+              ) : users.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+                  <Users size={28} className="text-zinc-800" />
+                  <p className="text-sm text-zinc-600">Nenhum membro cadastrado.</p>
+                </div>
+              ) : (
+                users.map((user) => {
+                  const isSelf = currentUser?.id === user.id;
+                  return (
+                    <div key={user.id} className="flex items-center gap-4 px-6 py-4">
+                      <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/5 text-sm font-bold text-zinc-300 uppercase">
+                        {user.name.charAt(0)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="flex items-center gap-2 truncate text-sm font-medium text-white">
+                          {user.name}
+                          {isSelf && <span className="text-[10px] text-zinc-500">(você)</span>}
+                        </p>
+                        <p className="truncate text-xs text-zinc-600">{user.email}</p>
+                      </div>
+                      <select
+                        value={user.role}
+                        onChange={(e) => handleRoleChange(user.id, e.target.value as UserRole)}
+                        disabled={isSelf}
+                        className={`rounded-lg border px-2 py-1.5 text-[11px] font-bold uppercase tracking-wider outline-none transition ${roleBadgeColors[user.role]} ${isSelf ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:opacity-80'}`}
+                      >
+                        {ROLE_OPTIONS.map((r) => (
+                          <option key={r.value} value={r.value}>{r.label}</option>
+                        ))}
+                      </select>
+                      {!isSelf && (
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(user.id, user.name)}
+                          title="Remover membro"
+                          className="rounded-lg p-1.5 text-zinc-600 transition hover:bg-red-500/20 hover:text-red-400"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          {/* Role legend */}
+          <div className="rounded-2xl border border-white/[0.06] bg-[#0a0a0a] px-5 py-4">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[0.15em] text-zinc-600">Legenda de Permissões</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {ROLE_OPTIONS.map((r) => (
+                <div key={r.value} className="flex items-center gap-2.5">
+                  <span className={`inline-block rounded-md border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${roleBadgeColors[r.value]}`}>
+                    {r.label}
+                  </span>
+                  <span className="text-[11px] text-zinc-500">{r.desc}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     </div>

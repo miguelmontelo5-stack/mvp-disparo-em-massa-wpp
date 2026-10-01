@@ -29,6 +29,13 @@ export interface SessionData {
   fotoPerfilUrl: string;
 }
 
+export interface SessionContact {
+  id: string;
+  nomeCompleto: string;
+  telefone: string;
+  salvo: boolean;
+}
+
 export class WhatsAppSession {
   public id: string;
   public name: string;
@@ -38,12 +45,130 @@ export class WhatsAppSession {
   public error: string | null = null;
   public telefone: string = '';
   public socket: WASocket | null = null;
-  public contacts: Map<string, { id: string; nomeCompleto: string; telefone: string }> = new Map();
+  public contacts: Map<string, SessionContact> = new Map();
   public isStarting: boolean = false;
+  private saveContactsTimeout: NodeJS.Timeout | null = null;
 
   constructor(id: string, name?: string) {
     this.id = id;
     this.name = name || (id === 'default' ? 'Chip 1' : id);
+  }
+
+  public loadContactsFromDisk(sessionPath: string) {
+    try {
+      const contactsFile = path.join(sessionPath, 'contacts.json');
+      if (fs.existsSync(contactsFile)) {
+        const raw = fs.readFileSync(contactsFile, 'utf-8');
+        const list: SessionContact[] = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          for (const item of list) {
+            const digits = item.telefone.replace(/\D/g, '');
+            if (digits) {
+              this.contacts.set(digits, {
+                id: item.id || `${digits}@s.whatsapp.net`,
+                nomeCompleto: item.nomeCompleto || `+${digits}`,
+                telefone: `+${digits}`,
+                salvo: Boolean(item.salvo),
+              });
+            }
+          }
+          logger.info(`[${this.name}] ${this.contacts.size} contatos carregados do cache local (salvos e não salvos).`);
+        }
+      }
+    } catch (e: any) {
+      logger.warn({ err: e.message }, `[${this.name}] Erro ao ler contacts.json do disco`);
+    }
+  }
+
+  public scheduleSaveContacts(sessionPath: string) {
+    if (this.saveContactsTimeout) return;
+    this.saveContactsTimeout = setTimeout(() => {
+      this.saveContactsTimeout = null;
+      try {
+        const contactsFile = path.join(sessionPath, 'contacts.json');
+        const array = Array.from(this.contacts.values());
+        fs.writeFileSync(contactsFile, JSON.stringify(array, null, 2), 'utf-8');
+      } catch (e: any) {
+        logger.warn({ err: e.message }, `[${this.name}] Erro ao persistir contacts.json`);
+      }
+    }, 1500);
+  }
+
+  public registerContact(
+    jid: string | undefined | null,
+    opts: {
+      name?: string | null;
+      notify?: string | null;
+      isSaved?: boolean;
+    }
+  ): boolean {
+    if (!jid || typeof jid !== 'string') return false;
+
+    // Ignora grupos, canais, status do WhatsApp, broadcasts
+    if (
+      jid.includes('@g.us') ||
+      jid.includes('@broadcast') ||
+      jid.includes('@newsletter') ||
+      jid.includes('@lid') ||
+      jid.includes('status@broadcast')
+    ) {
+      return false;
+    }
+
+    const digits = jid.split('@')[0].split(':')[0].replace(/\D/g, '');
+    if (!digits || digits.length < 8) return false;
+
+    // Não registra o próprio número do chip
+    const myDigits = this.telefone ? this.telefone.replace(/\D/g, '') : '';
+    if (myDigits && digits === myDigits) return false;
+
+    const existing = this.contacts.get(digits);
+    const formattedPhone = '+' + digits;
+
+    let isSaved = opts.isSaved ?? false;
+    let nomeCompleto = '';
+
+    const cleanName = opts.name && opts.name.trim() && opts.name.trim() !== digits ? opts.name.trim() : null;
+    const cleanNotify = opts.notify && opts.notify.trim() && opts.notify.trim() !== digits ? opts.notify.trim() : null;
+
+    if (cleanName) {
+      nomeCompleto = cleanName;
+      isSaved = true;
+    } else if (existing?.salvo && existing.nomeCompleto && existing.nomeCompleto !== formattedPhone) {
+      nomeCompleto = existing.nomeCompleto;
+      isSaved = true;
+    } else if (cleanNotify) {
+      nomeCompleto = cleanNotify;
+      isSaved = existing?.salvo ?? false;
+    } else if (existing?.nomeCompleto && existing.nomeCompleto !== formattedPhone) {
+      nomeCompleto = existing.nomeCompleto;
+      isSaved = existing.salvo ?? false;
+    } else {
+      nomeCompleto = formattedPhone;
+      isSaved = existing?.salvo ?? false;
+    }
+
+    if (existing?.salvo) {
+      isSaved = true;
+    }
+
+    const updatedContact: SessionContact = {
+      id: `${digits}@s.whatsapp.net`,
+      nomeCompleto,
+      telefone: formattedPhone,
+      salvo: isSaved,
+    };
+
+    if (
+      !existing ||
+      existing.nomeCompleto !== updatedContact.nomeCompleto ||
+      existing.salvo !== updatedContact.salvo
+    ) {
+      this.contacts.set(digits, updatedContact);
+      return true;
+    }
+
+    return false;
   }
 
   toJSON(): SessionData {
@@ -161,6 +286,11 @@ class BaileysManager extends EventEmitter {
         session.socket.ev.removeAllListeners('connection.update');
         session.socket.ev.removeAllListeners('creds.update');
         session.socket.ev.removeAllListeners('contacts.upsert');
+        session.socket.ev.removeAllListeners('contacts.update');
+        session.socket.ev.removeAllListeners('chats.upsert');
+        session.socket.ev.removeAllListeners('chats.update');
+        session.socket.ev.removeAllListeners('messages.upsert');
+        session.socket.ev.removeAllListeners('messaging-history.set');
         session.socket.end(undefined);
       } catch {}
       session.socket = null;
@@ -175,6 +305,9 @@ class BaileysManager extends EventEmitter {
     if (!fs.existsSync(sessionPath)) {
       fs.mkdirSync(sessionPath, { recursive: true });
     }
+
+    // Carrega contatos já cacheados em disco
+    session.loadContactsFromDisk(sessionPath);
 
     try {
       const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
@@ -195,7 +328,7 @@ class BaileysManager extends EventEmitter {
         logger: silentLogger,
         printQRInTerminal: false,
         browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false,
+        syncFullHistory: true, // Sincroniza histórico completo para importar contatos salvos e conversas (não salvos)
         generateHighQualityLinkPreview: false,
         markOnlineOnConnect: true,
         connectTimeoutMs: 60000,
@@ -206,17 +339,114 @@ class BaileysManager extends EventEmitter {
 
       sock.ev.on('creds.update', saveCreds);
 
-      sock.ev.on('contacts.upsert', (newContacts: BaileysContact[]) => {
-        for (const c of newContacts) {
-          if (c.id && !c.id.includes('@g.us')) {
-            const digits = c.id.split('@')[0].split(':')[0];
-            const name = c.name || c.notify || c.verifiedName || digits;
-            session.contacts.set(digits, {
-              id: c.id,
-              nomeCompleto: name,
-              telefone: '+' + digits,
-            });
+      // ── 1. Histórico Completo (Contatos Salvos + Conversas + Mensagens) ────
+      sock.ev.on('messaging-history.set', ({ chats, contacts, messages }) => {
+        let changed = false;
+
+        // Contatos da agenda
+        if (Array.isArray(contacts)) {
+          for (const c of contacts) {
+            const hasName = Boolean(c.name && c.name.trim());
+            if (session.registerContact(c.id, { name: c.name || c.verifiedName, notify: c.notify, isSaved: hasName })) {
+              changed = true;
+            }
           }
+        }
+
+        // Conversas ativas (inclui números não salvos)
+        if (Array.isArray(chats)) {
+          for (const chat of chats) {
+            if (session.registerContact(chat.id, { name: chat.name, isSaved: false })) {
+              changed = true;
+            }
+          }
+        }
+
+        // Mensagens recebidas/enviadas
+        if (Array.isArray(messages)) {
+          for (const m of messages) {
+            const remoteJid = m.key?.remoteJid;
+            if (remoteJid && session.registerContact(remoteJid, { notify: m.pushName })) {
+              changed = true;
+            }
+          }
+        }
+
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
+          logger.info(`[${session.name}] Histórico sincronizado: ${session.contacts.size} contatos importados.`);
+        }
+      });
+
+      // ── 2. Contatos da Agenda (Upsert e Update) ───────────────────────────
+      sock.ev.on('contacts.upsert', (newContacts: BaileysContact[]) => {
+        let changed = false;
+        for (const c of newContacts) {
+          const hasName = Boolean(c.name && c.name.trim());
+          if (session.registerContact(c.id, { name: c.name || c.verifiedName, notify: c.notify, isSaved: hasName })) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
+        }
+      });
+
+      sock.ev.on('contacts.update', (updates) => {
+        let changed = false;
+        for (const c of updates) {
+          const hasName = Boolean(c.name && c.name.trim());
+          if (session.registerContact(c.id, { name: c.name || c.verifiedName, notify: c.notify, isSaved: hasName })) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
+        }
+      });
+
+      // ── 3. Conversas / Chats (Contatos Não Salvos) ────────────────────────
+      sock.ev.on('chats.upsert', (newChats) => {
+        let changed = false;
+        for (const chat of newChats) {
+          if (session.registerContact(chat.id, { name: chat.name, isSaved: false })) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
+        }
+      });
+
+      sock.ev.on('chats.update', (updates) => {
+        let changed = false;
+        for (const chat of updates) {
+          if (chat.id && session.registerContact(chat.id, { name: chat.name, isSaved: false })) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
+        }
+      });
+
+      // ── 4. Mensagens (Captura pushName / números de conversas recentes) ────
+      sock.ev.on('messages.upsert', ({ messages }) => {
+        let changed = false;
+        for (const m of messages) {
+          const remoteJid = m.key?.remoteJid;
+          if (remoteJid && session.registerContact(remoteJid, { notify: m.pushName })) {
+            changed = true;
+          }
+        }
+        if (changed) {
+          session.scheduleSaveContacts(sessionPath);
+          RedisService.setContacts(session.id, Array.from(session.contacts.values()), 86400);
         }
       });
 

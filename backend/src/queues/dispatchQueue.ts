@@ -13,6 +13,7 @@ export interface DispatchJobData {
   image?: string | null;
   sessionId: string;
   chipName: string;
+  delayMs?: number;
 }
 
 export interface DispatchResult {
@@ -30,7 +31,7 @@ export const dispatchQueue = new Queue<DispatchJobData, DispatchResult>('campaig
     attempts: 2,
     backoff: {
       type: 'exponential',
-      delay: 2000,
+      delay: 3000,
     },
     removeOnComplete: { count: 1000 },
     removeOnFail: { count: 500 },
@@ -45,15 +46,15 @@ export const dispatchQueueEvents = new QueueEvents('campaign-dispatch', {
 export const dispatchWorker = new Worker<DispatchJobData, DispatchResult>(
   'campaign-dispatch',
   async (job: Job<DispatchJobData, DispatchResult>) => {
-    const { campaignId, number, message, image, sessionId, chipName } = job.data;
+    const { campaignId, number, message, image, sessionId, chipName, delayMs } = job.data;
     const digits = number.replace(/\D/g, '');
     const chatId = `${digits}@c.us`;
 
     logger.info(`[Job ${job.id}] Enviando para ${digits} via chip ${chipName} (${sessionId})...`);
 
-    // Adquire lock rápido por sessão para evitar envio simultâneo pelo mesmo chip
+    // Adquire lock por sessão para garantir exclusão mútua por chip
     const lockKey = `session:${sessionId}`;
-    const acquired = await RedisService.acquireLock(lockKey, 5);
+    const acquired = await RedisService.acquireLock(lockKey, 15);
 
     try {
       const res = await baileysManager.sendMessage(sessionId, digits, message, image);
@@ -82,8 +83,12 @@ export const dispatchWorker = new Worker<DispatchJobData, DispatchResult>(
       if (acquired) {
         await RedisService.releaseLock(lockKey);
       }
-      // Delay entre envios
-      await new Promise((r) => setTimeout(r, config.SEND_DELAY_MS));
+      // Intervalo de segurança anti-spam com variação humana (jitter)
+      const baseDelay = delayMs && delayMs >= 1000 ? delayMs : (config.SEND_DELAY_MS || 4000);
+      const jitter = Math.floor(Math.random() * (baseDelay * 0.25));
+      const actualDelay = baseDelay + jitter;
+      logger.info(`[Anti-Spam] Pausa de ${(actualDelay / 1000).toFixed(1)}s no chip ${chipName} para evitar bloqueios...`);
+      await new Promise((r) => setTimeout(r, actualDelay));
     }
   },
   {

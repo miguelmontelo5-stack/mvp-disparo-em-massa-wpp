@@ -6,6 +6,8 @@ import {
   type Contact,
   type DispatchLog,
   type SessionItem,
+  type User,
+  type UserRole,
 } from './mockData';
 
 /** Em dev o Vite encaminha /api para o Express na 3001. */
@@ -70,7 +72,113 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-export function useWhatsAppConnection() {
+export function useAuth() {
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem('dlm_current_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [users, setUsers] = useState<User[]>([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+
+  const fetchUsers = useCallback(async () => {
+    setIsLoadingUsers(true);
+    try {
+      const headers: Record<string, string> = {};
+      if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+      const res = await fetch(`${API_BASE}/api/users`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setUsers(data.users || []);
+        if (!currentUser && data.currentUser) {
+          setCurrentUser(data.currentUser);
+          localStorage.setItem('dlm_current_user', JSON.stringify(data.currentUser));
+        } else if (currentUser && data.users) {
+          // Mantém sincronizado se a role mudou no backend
+          const updatedSelf = data.users.find((u: User) => u.id === currentUser.id);
+          if (updatedSelf && updatedSelf.role !== currentUser.role) {
+            setCurrentUser(updatedSelf);
+            localStorage.setItem('dlm_current_user', JSON.stringify(updatedSelf));
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Erro ao carregar usuários:', err);
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    void fetchUsers();
+  }, [fetchUsers]);
+
+  const switchActiveUser = useCallback((user: User) => {
+    setCurrentUser(user);
+    localStorage.setItem('dlm_current_user', JSON.stringify(user));
+  }, []);
+
+  const registerUser = useCallback(async (name: string, email: string, role?: UserRole) => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const res = await fetch(`${API_BASE}/api/auth/register`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name, email, role }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao cadastrar usuário');
+    await fetchUsers();
+    return data.user as User;
+  }, [currentUser?.id, fetchUsers]);
+
+  const updateRole = useCallback(async (userId: string, newRole: UserRole) => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/role`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ role: newRole }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao alterar permissão');
+    await fetchUsers();
+    if (currentUser?.id === userId) {
+      const updated = { ...currentUser, role: newRole };
+      setCurrentUser(updated);
+      localStorage.setItem('dlm_current_user', JSON.stringify(updated));
+    }
+    return data.user as User;
+  }, [currentUser, fetchUsers]);
+
+  const deleteUser = useCallback(async (userId: string) => {
+    const headers: Record<string, string> = {};
+    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Erro ao excluir usuário');
+    await fetchUsers();
+  }, [currentUser?.id, fetchUsers]);
+
+  return {
+    currentUser,
+    users,
+    isLoadingUsers,
+    switchActiveUser,
+    registerUser,
+    updateRole,
+    deleteUser,
+    refreshUsers: fetchUsers,
+  };
+}
+
+export function useWhatsAppConnection(currentUserId?: string) {
   const [connection, setConnection] =
     useState<ConnectionState>(mockConnection);
 
@@ -106,11 +214,17 @@ export function useWhatsAppConnection() {
     });
 
     try {
-      await fetch(`${API_BASE}/api/connect`, {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const res = await fetch(`${API_BASE}/api/connect`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ force, sessionId: sessId }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setConnection((c) => ({ ...c, error: data.error || 'Acesso negado ou erro ao conectar.' }));
+      }
     } catch {
       setConnection((currentConnection) => ({
         ...currentConnection,
@@ -118,7 +232,7 @@ export function useWhatsAppConnection() {
         error: 'Não foi possível falar com o backend.',
       }));
     }
-  }, []);
+  }, [currentUserId]);
 
   const desconectar = useCallback(async (targetSessionId?: string) => {
     let sessId = targetSessionId;
@@ -138,24 +252,32 @@ export function useWhatsAppConnection() {
     });
 
     try {
-      await fetch(`${API_BASE}/api/disconnect`, {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const res = await fetch(`${API_BASE}/api/disconnect`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ sessionId: sessId }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setConnection((c) => ({ ...c, error: data.error || 'Acesso negado para desconectar (apenas ADMIN).' }));
+      }
     } catch {
       setConnection((currentConnection) => ({
         ...currentConnection,
         error: 'Não foi possível desconectar no backend.',
       }));
     }
-  }, []);
+  }, [currentUserId]);
 
   const adicionarSessao = useCallback(async (name?: string) => {
     try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (currentUserId) headers['x-user-id'] = currentUserId;
       const res = await fetch(`${API_BASE}/api/sessions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ name }),
       });
       if (res.ok) {
@@ -171,16 +293,22 @@ export function useWhatsAppConnection() {
             error: null,
           }));
         }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Apenas administradores podem cadastrar novos chips.');
       }
     } catch (err) {
       console.error('Erro ao adicionar sessão:', err);
     }
-  }, []);
+  }, [currentUserId]);
 
   const removerSessao = useCallback(async (sessionId: string) => {
     try {
+      const headers: Record<string, string> = {};
+      if (currentUserId) headers['x-user-id'] = currentUserId;
       const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
         method: 'DELETE',
+        headers,
       });
       if (res.ok) {
         setConnection((current) => {
@@ -196,11 +324,14 @@ export function useWhatsAppConnection() {
             telefone: target ? target.telefone || '' : '',
           };
         });
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Apenas administradores podem excluir chips.');
       }
     } catch (err) {
       console.error('Erro ao remover sessão:', err);
     }
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -274,40 +405,38 @@ export function useWhatsAppContacts(status: ConnectionState['status'], sessionId
   const [fetchedContacts, setFetchedContacts] = useState<Contact[]>([]);
   const [isLoadingContacts, setIsLoadingContacts] = useState(false);
 
-  const contacts = status === 'conectado' ? fetchedContacts : [];
-
-  useEffect(() => {
+  const loadContacts = useCallback(async (force = false) => {
     if (status !== 'conectado') {
-      return undefined;
+      setFetchedContacts([]);
+      return;
     }
 
-    let cancelled = false;
     setIsLoadingContacts(true);
-
-    async function loadContacts() {
-      try {
-        const url = sessionId
-          ? `${API_BASE}/api/contacts?sessionId=${encodeURIComponent(sessionId)}`
-          : `${API_BASE}/api/contacts`;
-        const response = await fetch(url);
-        if (!response.ok) throw new Error('Falha ao carregar contatos');
-        const data = (await response.json()) as { contacts?: Contact[] };
-        if (!cancelled) setFetchedContacts(data.contacts ?? []);
-      } catch {
-        if (!cancelled) setFetchedContacts([]);
-      } finally {
-        if (!cancelled) setIsLoadingContacts(false);
-      }
+    try {
+      const base = sessionId
+        ? `${API_BASE}/api/contacts?sessionId=${encodeURIComponent(sessionId)}`
+        : `${API_BASE}/api/contacts`;
+      const url = force ? `${base}${base.includes('?') ? '&' : '?'}refresh=1` : base;
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Falha ao carregar contatos');
+      const data = (await response.json()) as { contacts?: Contact[] };
+      setFetchedContacts(data.contacts ?? []);
+    } catch {
+      setFetchedContacts([]);
+    } finally {
+      setIsLoadingContacts(false);
     }
-
-    void loadContacts();
-
-    return () => {
-      cancelled = true;
-    };
   }, [status, sessionId]);
 
-  return { contacts, isLoadingContacts };
+  useEffect(() => {
+    void loadContacts(false);
+  }, [loadContacts]);
+
+  return {
+    contacts: status === 'conectado' ? fetchedContacts : [],
+    isLoadingContacts,
+    refreshContacts: () => loadContacts(true),
+  };
 }
 
 
@@ -319,9 +448,10 @@ type MassPayload = {
   imageFile: File | null;
   contacts?: Contact[];
   sessionId?: string;
+  intervalSeconds?: number;
 };
 
-export function useCampaignManager() {
+export function useCampaignManager(currentUserId?: string) {
   const [logs, setLogs] = useState<DispatchLog[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -355,14 +485,18 @@ export function useCampaignManager() {
 
         setProgress(45);
 
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (currentUserId) headers['x-user-id'] = currentUserId;
+
         const response = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({
             numbers,
             message,
             image: imageBase64,
             sessionId: payload?.sessionId || 'auto',
+            intervalSeconds: payload?.intervalSeconds ?? 5,
           }),
         });
 
@@ -373,6 +507,13 @@ export function useCampaignManager() {
           error?: string;
           results?: Array<{ number: string; status: 'enviado' | 'falha'; chip?: string; error?: string }>;
         };
+
+        if (!response.ok) {
+          return {
+            success: false,
+            message: data.error || `Erro HTTP ${response.status}: Permissão negada ou falha no disparo.`,
+          };
+        }
 
         setProgress(100);
 
@@ -434,7 +575,7 @@ export function useCampaignManager() {
         }, 400);
       }
     },
-    [],
+    [currentUserId],
   );
 
   return {
