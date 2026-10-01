@@ -65,21 +65,29 @@ class UserManager {
       logger.warn({ err: err.message }, 'Falha ao ler users.json');
     }
 
-    // Garante que exista ao menos 1 ADMIN inicial padrão
-    if (this.users.size === 0) {
+    // Garante que o ADMIN disparomassa21@gmail.com exista
+    const adminEmail = 'disparomassa21@gmail.com';
+    let admin = Array.from(this.users.values()).find(
+      (u) => u.email.toLowerCase() === adminEmail.toLowerCase()
+    );
+
+    if (!admin) {
       const adminId = 'usr_admin_01';
-      const defaultAdmin: User = {
+      admin = {
         id: adminId,
         name: 'Administrador Master',
-        email: 'admin@dlm.com',
+        email: adminEmail,
         role: 'ADMIN',
-        passwordHash: this.hashPassword('admin123'),
+        passwordHash: this.hashPassword('abc12345'),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      this.users.set(adminId, defaultAdmin);
+      this.users.set(adminId, admin);
       this.saveUsers();
-      logger.info('Usuário Administrador inicial criado (admin@dlm.com / admin123).');
+      logger.info(`Usuário Administrador inicial configurado (${adminEmail} / abc12345).`);
+    } else if (admin.role !== 'ADMIN') {
+      admin.role = 'ADMIN';
+      this.saveUsers();
     }
   }
 

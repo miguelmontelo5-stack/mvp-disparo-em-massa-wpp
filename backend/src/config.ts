@@ -16,6 +16,10 @@ const envSchema = z.object({
   AUTH_DIR: z.string().default(path.resolve(__dirname, '../../auth_sessions')),
   SEND_DELAY_MS: z.coerce.number().default(800),
   LOG_LEVEL: z.string().default('info'),
+  SUPABASE_URL: z.string().optional().default(''),
+  SUPABASE_ANON_KEY: z.string().optional().default(''),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().optional().default(''),
+  CORS_ORIGIN: z.string().default('*'),
 });
 
 export const config = envSchema.parse({
@@ -26,4 +30,8 @@ export const config = envSchema.parse({
   AUTH_DIR: process.env.AUTH_DIR,
   SEND_DELAY_MS: process.env.SEND_DELAY_MS,
   LOG_LEVEL: process.env.LOG_LEVEL,
+  SUPABASE_URL: process.env.SUPABASE_URL,
+  SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
+  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  CORS_ORIGIN: process.env.CORS_ORIGIN,
 });

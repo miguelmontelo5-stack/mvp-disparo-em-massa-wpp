@@ -1,9 +1,10 @@
-import { Bot, LayoutDashboard, Send, Users, Zap } from 'lucide-react';
+import { Bot, LayoutDashboard, LogOut, Send, Users, Zap } from 'lucide-react';
 import { useState } from 'react';
 
 import { MassCampaignView, OverviewView, QuickSendView, TeamView } from './components';
 import { useAuth, useCampaignManager, useWhatsAppConnection, useWhatsAppContacts } from './useControllers';
 import type { UserRole } from './mockData';
+import LoginPage from './LoginPage';
 
 type View = 'overview' | 'mass' | 'quick' | 'team';
 
@@ -32,6 +33,8 @@ export default function Dashboard() {
 
   const {
     currentUser,
+    setCurrentUser,
+    logout,
     users,
     isLoadingUsers,
     registerUser,
@@ -39,6 +42,11 @@ export default function Dashboard() {
     deleteUser,
     refreshUsers,
   } = useAuth();
+
+  // Todos os usuários passam obrigatoriamente pela tela inicial
+  if (!currentUser) {
+    return <LoginPage onLoginSuccess={(u) => setCurrentUser(u as any)} />;
+  }
 
   const userRole: UserRole = currentUser?.role || 'VIEWER';
   const isAdmin = userRole === 'ADMIN';
@@ -120,6 +128,14 @@ export default function Dashboard() {
               <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${roleBadgeStyles[userRole]}`}>
                 {userRole}
               </span>
+              <button
+                type="button"
+                onClick={logout}
+                title="Sair da plataforma"
+                className="shrink-0 p-1.5 rounded-lg text-zinc-500 hover:text-rose-400 hover:bg-rose-500/10 transition"
+              >
+                <LogOut size={15} />
+              </button>
             </div>
           </div>
         )}
@@ -149,6 +165,14 @@ export default function Dashboard() {
           )}
           <span className={`inline-block h-2 w-2 rounded-full ${connection.status === 'conectado' ? 'bg-[#deff9a]' : 'bg-zinc-600'}`} />
           <span className="text-[11px] font-medium capitalize text-zinc-400">{connection.status}</span>
+          <button
+            type="button"
+            onClick={logout}
+            title="Sair"
+            className="p-1 rounded-md text-zinc-500 hover:text-rose-400 transition"
+          >
+            <LogOut size={16} />
+          </button>
         </div>
       </div>
 

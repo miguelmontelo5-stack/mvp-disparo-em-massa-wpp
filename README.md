@@ -165,46 +165,113 @@ O projeto possui um arquivo [backend/.env.example](file:///home/guest/Documentos
   }
   ```
 
+### Autenticação & Usuários (Supabase Auth & RBAC)
+* **Credenciais do Administrador Master:**
+  * **E-mail:** `disparomassa21@gmail.com`
+  * **Senha:** `abc12345`
+  * **Nível:** `ADMIN`
+* **Tela Inicial Obrigatória:** Todos os usuários passam obrigatoriamente pela tela de Login/Cadastro (`LoginPage`).
+* **Novos Usuários:** Usuários cadastrados recebem permissão de `OPERATOR` por padrão.
+
 ---
 
-## 📁 Estrutura de Pastas
+## 📁 Estrutura do Projeto Separado (Cloudflare Pages + VPS)
 
 ```text
-├── docker-compose.yml        # Configuração do Redis 7 e PostgreSQL 15
-├── package.json              # Scripts globais e dependências do frontend
-├── vite.config.ts            # Configuração do Vite com proxy para /api
-├── src/                      # Interface React (Dashboard)
-│   ├── Dashboard.tsx         # Componente principal do painel
-│   ├── components.tsx        # Componentes visuais do painel
-│   ├── useControllers.ts     # Hooks de conexão, contatos e campanhas
-│   └── mockData.ts           # Definições de tipos e dados iniciais
-└── backend/                  # Motor Fastify + Baileys + BullMQ
-    ├── package.json          # Dependências do backend (ESM)
-    ├── tsconfig.json         # Configuração TypeScript (NodeNext)
-    └── src/
-        ├── server.ts         # Servidor Fastify, rotas REST, SSE e WebSocket
-        ├── config.ts         # Validação de variáveis de ambiente com Zod
-        ├── redis.ts          # Cliente Redis, distributed locks e cache
-        ├── types.d.ts        # Declarações de tipos
-        ├── whatsapp/
-        │   └── baileysManager.ts # Gerenciador Multi-Chip com Baileys
-        ├── queues/
-        │   └── dispatchQueue.ts  # Fila e Worker BullMQ para envios
-        └── db/
-            ├── schema.ts     # Esquemas Drizzle para campanhas e logs
-            └── index.ts      # Cliente Drizzle ORM
+├── frontend/                 # [CLOUDFLARE PAGES] Single Page App (React 19 + Vite)
+│   ├── package.json          # Dependências do frontend
+│   ├── vite.config.ts        # Configuração do Vite e proxy de dev
+│   ├── wrangler.toml         # Configuração do Cloudflare Pages
+│   ├── public/
+│   │   └── _redirects        # SPA routing (/* -> /index.html 200)
+│   ├── .env.example          # Variáveis VITE_SUPABASE_* e VITE_API_BASE
+│   └── src/
+│       ├── LoginPage.tsx     # Tela inicial com autenticação obrigatória
+│       ├── Dashboard.tsx     # Painel principal autenticado
+│       ├── components.tsx    # Vistas de campanha, envio rápido, equipe
+│       ├── useControllers.ts # Hooks com token Bearer e sincronização de roles
+│       └── lib/
+│           └── supabase.ts   # Cliente Supabase Auth e fallback local
+│
+├── backend/                  # [VPS] Motor Node.js (Fastify + Baileys + BullMQ)
+│   ├── package.json          # Dependências do backend
+│   ├── Dockerfile            # Imagem Docker multi-stage para VPS
+│   ├── docker-compose.yml    # Stack completa para VPS (API + Redis + Postgres)
+│   ├── Caddyfile             # Configuração do Caddy para SSL automático na VPS
+│   ├── .env.example          # Configurações do backend e Supabase
+│   └── src/
+│       ├── server.ts         # Fastify com CORS, rotas RBAC, SSE e WS
+│       ├── supabase.ts       # Validação de JWT Supabase e seed do admin master
+│       ├── config.ts         # Validação de variáveis de ambiente com Zod
+│       ├── redis.ts          # Cliente Redis, distributed locks e cache
+│       ├── auth/
+│       │   └── userManager.ts # RBAC e contingência local
+│       ├── whatsapp/
+│       │   └── baileysManager.ts # Conexões Baileys multi-chip
+│       └── queues/
+│           └── dispatchQueue.ts  # Fila BullMQ com anti-spam e jitter
+│
+├── supabase/                 # Camada de Banco de Dados Supabase / PostgreSQL
+│   └── migrations/           # 14 migrations SQL (00001 a 00014)
+│       └── 00014_seed_admin_user.sql # Seed do admin disparomassa21@gmail.com
+│
+└── package.json              # Orquestrador raiz para desenvolvimento e build unificado
 ```
 
 ---
 
-## 🛠️ Comandos Úteis
+## 🌐 Guia de Deploy
+
+### 1. Frontend no Cloudflare Pages
+1. No painel da Cloudflare, acesse **Compute (Workers) > Workers & Pages > Create > Pages > Connect to Git**.
+2. Conecte o repositório GitHub.
+3. Configure os parâmetros de build:
+   * **Framework preset:** `Vite`
+   * **Root directory:** `frontend`
+   * **Build command:** `npm run build`
+   * **Build output directory:** `dist`
+4. Em **Environment variables**, adicione:
+   * `VITE_SUPABASE_URL`: URL do seu projeto no Supabase (`https://xxx.supabase.co`)
+   * `VITE_SUPABASE_ANON_KEY`: Chave anônima (anon public key) do Supabase
+   * `VITE_API_BASE`: Domínio da API na VPS (ex: `https://api.seudominio.com`)
+5. Clique em **Save and Deploy**. O arquivo `frontend/public/_redirects` já garante o correto roteamento de SPA.
+
+### 2. Backend na VPS (Oracle Cloud, GCP ou qualquer VPS)
+1. Clone o repositório na VPS:
+   ```bash
+   git clone <URL_DO_REPOSITORIO>
+   cd mvp-disparo-em-massa-wpp/backend
+   ```
+2. Crie e configure o arquivo `.env`:
+   ```bash
+   cp .env.example .env
+   nano .env
+   ```
+   * Preencha `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+   * Configure `CORS_ORIGIN` com a URL do seu frontend no Cloudflare Pages (ex: `https://dlm-frontend.pages.dev`).
+3. Inicie os containers com Docker Compose:
+   ```bash
+   docker compose up -d --build
+   ```
+4. Configure o Caddy para SSL automático apontando para a porta `3001` (veja `backend/Caddyfile`).
+
+### 3. Banco de Dados & Supabase
+Execute as migrations do diretório `supabase/migrations/` no seu projeto Supabase através da CLI ou SQL Editor:
+* As migrations criam o schema multi-tenant, tabelas de perfil, conexões WhatsApp, filas, políticas de RLS e o seed do administrador:
+  * **Usuário:** `disparomassa21@gmail.com`
+  * **Senha:** `abc12345`
+  * **Papel:** `ADMIN`
+
+---
+
+## 🛠️ Comandos Locais
 
 | Comando | Descrição |
 | :--- | :--- |
-| `npm run dev` | Inicia Frontend (`5173`) e Backend (`3001`) simultaneamente |
-| `npm run dev:ui` | Inicia apenas o Frontend Vite |
-| `npm run dev:api` | Inicia apenas a API Fastify em modo watch |
-| `npm run build` | Compila o Frontend para produção |
-| `npm run build --prefix backend` | Compila o Backend TypeScript para `backend/dist` |
-| `docker compose ps` | Verifica a saúde dos containers Redis e Postgres |
-| `docker compose down` | Para os containers do Docker |
+| `npm run dev` | Inicia Frontend e Backend simultaneamente em modo dev |
+| `npm run dev:frontend` | Inicia apenas o Frontend Vite (`http://localhost:5173`) |
+| `npm run dev:backend` | Inicia apenas a API Fastify (`http://localhost:3001`) |
+| `npm run build` | Compila tanto o Frontend quanto o Backend |
+| `npm run build:frontend` | Compila o Frontend para `frontend/dist` |
+| `npm run build:backend` | Compila o Backend para `backend/dist` |
+

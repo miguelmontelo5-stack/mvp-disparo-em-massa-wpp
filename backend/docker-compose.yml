@@ -1,0 +1,53 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dlm_api
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-disparo_massa}
+      - AUTH_DIR=/app/auth_sessions
+      - SEND_DELAY_MS=800
+      - LOG_LEVEL=info
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+    volumes:
+      - dlm_auth_sessions:/app/auth_sessions
+    depends_on:
+      - redis
+      - postgres
+
+  redis:
+    image: redis:7-alpine
+    container_name: dlm_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - dlm_redis_data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: dlm_postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-disparo_massa}
+    volumes:
+      - dlm_pg_data:/var/lib/postgresql/data
+
+volumes:
+  dlm_auth_sessions:
+  dlm_redis_data:
+  dlm_pg_data:

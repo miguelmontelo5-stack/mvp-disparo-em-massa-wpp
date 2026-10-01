@@ -1,0 +1,10 @@
+# Configuração de Caddy para Reverse Proxy com SSL Automático na VPS
+# Substitua api.seudominio.com pelo seu subdomínio configurado
+api.seudominio.com {
+    reverse_proxy localhost:3001 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

@@ -9,9 +9,32 @@ import {
   type User,
   type UserRole,
 } from './mockData';
+import { logoutUser } from './lib/supabase';
 
 /** Em dev o Vite encaminha /api para o Express na 3001. */
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+
+export function getAuthHeaders(userId?: string): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (userId) {
+    headers['x-user-id'] = userId;
+  }
+  const sessionStr = localStorage.getItem('dlm_supabase_session');
+  if (sessionStr) {
+    try {
+      const session = JSON.parse(sessionStr);
+      if (session?.token) {
+        headers['Authorization'] = `Bearer ${session.token}`;
+      }
+      if (!headers['x-user-id'] && session?.id) {
+        headers['x-user-id'] = session.id;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return headers;
+}
 
 type ApiStatus = {
   status?: ConnectionState['status'];
@@ -75,6 +98,8 @@ function fileToBase64(file: File): Promise<string> {
 export function useAuth() {
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
+      const supaSaved = localStorage.getItem('dlm_supabase_session');
+      if (supaSaved) return JSON.parse(supaSaved);
       const saved = localStorage.getItem('dlm_current_user');
       return saved ? JSON.parse(saved) : null;
     } catch {
@@ -84,24 +109,29 @@ export function useAuth() {
   const [users, setUsers] = useState<User[]>([]);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
 
+  const logout = useCallback(async () => {
+    await logoutUser();
+    setCurrentUser(null);
+  }, []);
+
   const fetchUsers = useCallback(async () => {
+    if (!currentUser) return;
     setIsLoadingUsers(true);
     try {
-      const headers: Record<string, string> = {};
-      if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+      const headers = getAuthHeaders(currentUser?.id);
       const res = await fetch(`${API_BASE}/api/users`, { headers });
       if (res.ok) {
         const data = await res.json();
         setUsers(data.users || []);
-        if (!currentUser && data.currentUser) {
-          setCurrentUser(data.currentUser);
-          localStorage.setItem('dlm_current_user', JSON.stringify(data.currentUser));
-        } else if (currentUser && data.users) {
+        if (currentUser && data.users) {
           // Mantém sincronizado se a role mudou no backend
-          const updatedSelf = data.users.find((u: User) => u.id === currentUser.id);
+          const updatedSelf = data.users.find(
+            (u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase()
+          );
           if (updatedSelf && updatedSelf.role !== currentUser.role) {
-            setCurrentUser(updatedSelf);
-            localStorage.setItem('dlm_current_user', JSON.stringify(updatedSelf));
+            const updated = { ...currentUser, role: updatedSelf.role };
+            setCurrentUser(updated);
+            localStorage.setItem('dlm_supabase_session', JSON.stringify(updated));
           }
         }
       }
@@ -113,17 +143,21 @@ export function useAuth() {
   }, [currentUser]);
 
   useEffect(() => {
-    void fetchUsers();
-  }, [fetchUsers]);
+    if (currentUser) {
+      void fetchUsers();
+    }
+  }, [currentUser, fetchUsers]);
 
   const switchActiveUser = useCallback((user: User) => {
     setCurrentUser(user);
-    localStorage.setItem('dlm_current_user', JSON.stringify(user));
+    localStorage.setItem('dlm_supabase_session', JSON.stringify(user));
   }, []);
 
   const registerUser = useCallback(async (name: string, email: string, role?: UserRole) => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const headers: Record<string, string> = {
+      ...getAuthHeaders(currentUser?.id),
+      'Content-Type': 'application/json',
+    };
     const res = await fetch(`${API_BASE}/api/auth/register`, {
       method: 'POST',
       headers,
@@ -136,8 +170,10 @@ export function useAuth() {
   }, [currentUser?.id, fetchUsers]);
 
   const updateRole = useCallback(async (userId: string, newRole: UserRole) => {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const headers: Record<string, string> = {
+      ...getAuthHeaders(currentUser?.id),
+      'Content-Type': 'application/json',
+    };
     const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}/role`, {
       method: 'PATCH',
       headers,
@@ -149,14 +185,13 @@ export function useAuth() {
     if (currentUser?.id === userId) {
       const updated = { ...currentUser, role: newRole };
       setCurrentUser(updated);
-      localStorage.setItem('dlm_current_user', JSON.stringify(updated));
+      localStorage.setItem('dlm_supabase_session', JSON.stringify(updated));
     }
     return data.user as User;
   }, [currentUser, fetchUsers]);
 
   const deleteUser = useCallback(async (userId: string) => {
-    const headers: Record<string, string> = {};
-    if (currentUser?.id) headers['x-user-id'] = currentUser.id;
+    const headers = getAuthHeaders(currentUser?.id);
     const res = await fetch(`${API_BASE}/api/users/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
       headers,
@@ -168,6 +203,8 @@ export function useAuth() {
 
   return {
     currentUser,
+    setCurrentUser,
+    logout,
     users,
     isLoadingUsers,
     switchActiveUser,
@@ -214,8 +251,10 @@ export function useWhatsAppConnection(currentUserId?: string) {
     });
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const headers: Record<string, string> = {
+        ...getAuthHeaders(currentUserId),
+        'Content-Type': 'application/json',
+      };
       const res = await fetch(`${API_BASE}/api/connect`, {
         method: 'POST',
         headers,
@@ -252,8 +291,10 @@ export function useWhatsAppConnection(currentUserId?: string) {
     });
 
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const headers: Record<string, string> = {
+        ...getAuthHeaders(currentUserId),
+        'Content-Type': 'application/json',
+      };
       const res = await fetch(`${API_BASE}/api/disconnect`, {
         method: 'POST',
         headers,
@@ -273,8 +314,10 @@ export function useWhatsAppConnection(currentUserId?: string) {
 
   const adicionarSessao = useCallback(async (name?: string) => {
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const headers: Record<string, string> = {
+        ...getAuthHeaders(currentUserId),
+        'Content-Type': 'application/json',
+      };
       const res = await fetch(`${API_BASE}/api/sessions`, {
         method: 'POST',
         headers,
@@ -304,8 +347,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
 
   const removerSessao = useCallback(async (sessionId: string) => {
     try {
-      const headers: Record<string, string> = {};
-      if (currentUserId) headers['x-user-id'] = currentUserId;
+      const headers = getAuthHeaders(currentUserId);
       const res = await fetch(`${API_BASE}/api/sessions/${encodeURIComponent(sessionId)}`, {
         method: 'DELETE',
         headers,
@@ -417,7 +459,7 @@ export function useWhatsAppContacts(status: ConnectionState['status'], sessionId
         ? `${API_BASE}/api/contacts?sessionId=${encodeURIComponent(sessionId)}`
         : `${API_BASE}/api/contacts`;
       const url = force ? `${base}${base.includes('?') ? '&' : '?'}refresh=1` : base;
-      const response = await fetch(url);
+      const response = await fetch(url, { headers: getAuthHeaders() });
       if (!response.ok) throw new Error('Falha ao carregar contatos');
       const data = (await response.json()) as { contacts?: Contact[] };
       setFetchedContacts(data.contacts ?? []);
@@ -485,8 +527,10 @@ export function useCampaignManager(currentUserId?: string) {
 
         setProgress(45);
 
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (currentUserId) headers['x-user-id'] = currentUserId;
+        const headers: Record<string, string> = {
+          ...getAuthHeaders(currentUserId),
+          'Content-Type': 'application/json',
+        };
 
         const response = await fetch(`${API_BASE}/api/send`, {
           method: 'POST',

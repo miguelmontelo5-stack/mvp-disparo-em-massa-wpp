@@ -13,6 +13,11 @@ import {
   type DispatchResult,
 } from './queues/dispatchQueue.js';
 import { userManager, type UserRole, type SafeUser } from './auth/userManager.js';
+import {
+  authenticateRequestUser,
+  ensureSupabaseAdminUser,
+  ADMIN_EMAIL,
+} from './supabase.js';
 
 const logger = pino({
   level: config.LOG_LEVEL,
@@ -65,11 +70,15 @@ baileysManager.on('state', (state) => {
 });
 
 async function main() {
-  // CORS
+  // CORS para Cloudflare Pages e Localhost
+  const allowedOrigins = config.CORS_ORIGIN === '*'
+    ? true
+    : [config.CORS_ORIGIN, 'http://localhost:5173', 'http://localhost:4173', 'http://127.0.0.1:5173'];
+
   await server.register(cors, {
-    origin: ['http://localhost:5173', 'http://localhost:4173', 'http://127.0.0.1:5173'],
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Accept', 'Cache-Control'],
+    origin: allowedOrigins,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Accept', 'Cache-Control', 'Authorization', 'x-user-id'],
   });
 
   // WebSocket
@@ -98,19 +107,25 @@ async function main() {
   });
 
   // ── Helpers de RBAC & Autenticação ──────────────────────────────────────────
-  function getCurrentUser(req: any): SafeUser {
-    const userId = req.headers['x-user-id'] || req.headers.authorization?.replace(/^Bearer\s+/i, '');
-    if (userId) {
-      const u = userManager.getById(String(userId));
+  async function getCurrentUser(req: any): Promise<SafeUser> {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.replace(/^Bearer\s+/i, '') || req.headers['x-user-id'];
+    if (token) {
+      // 1. Tenta validar JWT via Supabase Auth
+      const supaUser = await authenticateRequestUser(String(token));
+      if (supaUser) return supaUser;
+
+      // 2. Tenta buscar no gerenciador local
+      const u = userManager.getById(String(token)) || userManager.getByEmail(String(token));
       if (u) return u;
     }
-    // Fallback: seleciona o primeiro admin padrão
+    // Fallback: seleciona o administrador padrão
     const all = userManager.getAll();
-    return all.find((u) => u.role === 'ADMIN') || all[0];
+    return all.find((u) => u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && u.role === 'ADMIN') || all[0];
   }
 
-  function checkRole(req: any, allowedRoles: UserRole[], reply: any): boolean {
-    const user = getCurrentUser(req);
+  async function checkRole(req: any, allowedRoles: UserRole[], reply: any): Promise<boolean> {
+    const user = await getCurrentUser(req);
     if (!user || !allowedRoles.includes(user.role)) {
       reply.status(403).send({
         error: `Acesso negado. Ação restrita para papéis: [${allowedRoles.join(', ')}]. Seu papel atual é [${user?.role || 'DESCONHECIDO'}].`,
@@ -124,7 +139,7 @@ async function main() {
 
   // GET /api/auth/me — Obtém dados do usuário atual e seus privilégios
   server.get('/api/auth/me', async (req) => {
-    const user = getCurrentUser(req);
+    const user = await getCurrentUser(req);
     return { user };
   });
 
@@ -163,7 +178,7 @@ async function main() {
     }
 
     try {
-      const caller = getCurrentUser(req);
+      const caller = await getCurrentUser(req);
       // Novos usuários cadastrados por padrão recebem OPERATOR. Apenas ADMIN pode especificar outro papel.
       const assignedRole = (caller.role === 'ADMIN' && parsed.data.role) ? parsed.data.role : 'OPERATOR';
       const user = userManager.register(parsed.data.name, parsed.data.email, parsed.data.password, assignedRole);
@@ -177,13 +192,17 @@ async function main() {
   // GET /api/users — Lista todos os usuários e seus níveis de acesso
   server.get('/api/users', async (req) => {
     const users = userManager.getAll();
-    const currentUser = getCurrentUser(req);
+    const currentUser = await getCurrentUser(req);
+    // Se o usuário atual logado via Supabase não estiver na lista local, inclui para exibição
+    if (!users.some((u) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase())) {
+      users.unshift(currentUser);
+    }
     return { users, currentUser };
   });
 
   // PATCH /api/users/:id/role — Atualiza o nível de acesso de um usuário (Exclusivo ADMIN)
   server.patch('/api/users/:id/role', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN'], reply)) return;
+    if (!await checkRole(req, ['ADMIN'], reply)) return;
 
     const { id } = req.params as { id: string };
     const schema = z.object({
@@ -196,7 +215,7 @@ async function main() {
     }
 
     try {
-      const caller = getCurrentUser(req);
+      const caller = await getCurrentUser(req);
       const updated = userManager.updateRole(id, parsed.data.role, caller.id);
       return { ok: true, user: updated };
     } catch (err: any) {
@@ -206,11 +225,11 @@ async function main() {
 
   // DELETE /api/users/:id — Remove um usuário da plataforma (Exclusivo ADMIN)
   server.delete('/api/users/:id', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN'], reply)) return;
+    if (!await checkRole(req, ['ADMIN'], reply)) return;
 
     const { id } = req.params as { id: string };
     try {
-      const caller = getCurrentUser(req);
+      const caller = await getCurrentUser(req);
       const ok = userManager.deleteUser(id, caller.id);
       if (!ok) {
         return reply.status(404).send({ error: 'Usuário não encontrado.' });
@@ -291,7 +310,7 @@ async function main() {
 
   // POST /api/sessions — Cria uma nova sessão (Exclusivo ADMIN)
   server.post('/api/sessions', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN'], reply)) return;
+    if (!await checkRole(req, ['ADMIN'], reply)) return;
 
     const body = (req.body as any) || {};
     const name = body.name;
@@ -302,7 +321,7 @@ async function main() {
 
   // DELETE /api/sessions/:sessionId — Remove uma sessão (Exclusivo ADMIN)
   server.delete('/api/sessions/:sessionId', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN'], reply)) return;
+    if (!await checkRole(req, ['ADMIN'], reply)) return;
 
     const { sessionId } = req.params as { sessionId: string };
     if (sessionId === 'default') {
@@ -348,7 +367,7 @@ async function main() {
 
   // POST /api/connect — Inicia conexão/pareamento (ADMIN e OPERATOR)
   server.post('/api/connect', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
+    if (!await checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
 
     const { force, sessionId = 'default' } = (req.body as any) || {};
     const session = await baileysManager.connectSession(sessionId, force);
@@ -357,7 +376,7 @@ async function main() {
 
   // POST /api/disconnect — Desconecta sessão (Exclusivo ADMIN)
   server.post('/api/disconnect', async (req, reply) => {
-    if (!checkRole(req, ['ADMIN'], reply)) return;
+    if (!await checkRole(req, ['ADMIN'], reply)) return;
 
     const body = (req.body as any) || {};
     const query = (req.query as any) || {};
@@ -429,7 +448,7 @@ async function main() {
   // POST /api/send — Disparo em massa via BullMQ + Redis com Round-Robin Multi-Chip e Anti-Spam
   server.post('/api/send', async (req, reply) => {
     // Permite apenas ADMIN e OPERATOR realizarem envios (VIEWER apenas visualiza)
-    if (!checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
+    if (!await checkRole(req, ['ADMIN', 'OPERATOR'], reply)) return;
 
     const sendSchema = z.object({
       numbers: z.array(z.string()).min(1, 'Pelo menos um número deve ser informado.'),
@@ -526,6 +545,7 @@ async function main() {
 
   // Inicialização do servidor Fastify
   try {
+    await ensureSupabaseAdminUser();
     await server.listen({ port: config.PORT, host: config.HOST });
     logger.info(`🚀 Servidor Fastify rodando na porta ${config.PORT} (${config.HOST})`);
     logger.info(`✨ Stack ativa: Fastify + Baileys + BullMQ + Redis`);
