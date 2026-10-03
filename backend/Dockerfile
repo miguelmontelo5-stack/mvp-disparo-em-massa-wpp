@@ -11,7 +11,7 @@ COPY src ./src
 RUN npm run build
 
 # Runner Stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
