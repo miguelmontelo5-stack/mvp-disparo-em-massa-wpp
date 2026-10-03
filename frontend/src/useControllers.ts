@@ -412,9 +412,18 @@ export function useWhatsAppConnection(currentUserId?: string) {
       }
     }
 
-    const wsUrl = API_BASE
-      ? API_BASE.replace(/^http/, 'ws') + '/ws'
-      : `ws://${window.location.host}/ws`;
+        let wsUrl = '';
+    if (API_BASE) {
+      if (API_BASE.startsWith('http')) {
+        wsUrl = API_BASE.replace(/^http/, 'ws') + '/ws';
+      } else {
+        wsUrl = 'wss://' + API_BASE + '/ws';
+      }
+    } else {
+      wsUrl = window.location.protocol === 'https:' 
+        ? "wss://${window.location.host}/ws" 
+        : "ws://${window.location.host}/ws";
+    }
 
     const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
