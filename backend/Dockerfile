@@ -26,7 +26,7 @@ COPY --from=builder /app/dist ./dist
 
 # Diretório para persistência de sessões Baileys
 RUN mkdir -p /app/auth_sessions
-VOLUME /app/auth_sessions
+#VOLUME /app/auth_sessions
 
 EXPOSE 3001
 
