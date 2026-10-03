@@ -414,7 +414,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
 
     const wsUrl = API_BASE
       ? API_BASE.replace(/^http/, 'ws') + '/ws'
-      : "ws://${window.location.host}/ws";
+      : `ws://${window.location.host}/ws`;
 
     const ws = new WebSocket(wsUrl);
     ws.onmessage = (event) => {
