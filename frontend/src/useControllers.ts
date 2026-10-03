@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   mockConnection,
@@ -53,7 +53,7 @@ function applyApiStatus(current: ConnectionState, data: ApiStatus): ConnectionSt
     ? data.sessions
     : current.sessions;
 
-  // Busca a sessÃ£o ativa entre as sessÃµes recebidas
+  // Busca a sessão ativa entre as sessões recebidas
   const activeSess = incomingSessions.find((s) => s.id === currentActiveId) || incomingSessions[0];
 
   const nextStatus = activeSess ? activeSess.status : (data.status ?? 'desconectado');
@@ -124,7 +124,7 @@ export function useAuth() {
         const data = await res.json();
         setUsers(data.users || []);
         if (currentUser && data.users) {
-          // MantÃ©m sincronizado se a role mudou no backend
+          // Mantém sincronizado se a role mudou no backend
           const updatedSelf = data.users.find(
             (u: User) => u.id === currentUser.id || u.email.toLowerCase() === currentUser.email.toLowerCase()
           );
@@ -136,7 +136,7 @@ export function useAuth() {
         }
       }
     } catch (err) {
-      console.error('Erro ao carregar usuÃ¡rios:', err);
+      console.error('Erro ao carregar usuários:', err);
     } finally {
       setIsLoadingUsers(false);
     }
@@ -164,7 +164,7 @@ export function useAuth() {
       body: JSON.stringify({ name, email, role }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao cadastrar usuÃ¡rio');
+    if (!res.ok) throw new Error(data.error || 'Erro ao cadastrar usuário');
     await fetchUsers();
     return data.user as User;
   }, [currentUser?.id, fetchUsers]);
@@ -180,7 +180,7 @@ export function useAuth() {
       body: JSON.stringify({ role: newRole }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao alterar permissÃ£o');
+    if (!res.ok) throw new Error(data.error || 'Erro ao alterar permissão');
     await fetchUsers();
     if (currentUser?.id === userId) {
       const updated = { ...currentUser, role: newRole };
@@ -197,7 +197,7 @@ export function useAuth() {
       headers,
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Erro ao excluir usuÃ¡rio');
+    if (!res.ok) throw new Error(data.error || 'Erro ao excluir usuário');
     await fetchUsers();
   }, [currentUser?.id, fetchUsers]);
 
@@ -268,7 +268,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
       setConnection((currentConnection) => ({
         ...currentConnection,
         status: 'desconectado',
-        error: 'NÃ£o foi possÃ­vel falar com o backend.',
+        error: 'Não foi possível falar com o backend.',
       }));
     }
   }, [currentUserId]);
@@ -307,7 +307,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
     } catch {
       setConnection((currentConnection) => ({
         ...currentConnection,
-        error: 'NÃ£o foi possÃ­vel desconectar no backend.',
+        error: 'Não foi possível desconectar no backend.',
       }));
     }
   }, [currentUserId]);
@@ -341,7 +341,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
         alert(err.error || 'Apenas administradores podem cadastrar novos chips.');
       }
     } catch (err) {
-      console.error('Erro ao adicionar sessÃ£o:', err);
+      console.error('Erro ao adicionar sessão:', err);
     }
   }, [currentUserId]);
 
@@ -371,7 +371,7 @@ export function useWhatsAppConnection(currentUserId?: string) {
         alert(err.error || 'Apenas administradores podem excluir chips.');
       }
     } catch (err) {
-      console.error('Erro ao remover sessÃ£o:', err);
+      console.error('Erro ao remover sessão:', err);
     }
   }, [currentUserId]);
 
@@ -407,35 +407,32 @@ export function useWhatsAppConnection(currentUserId?: string) {
 
         setConnection((currentConnection) => ({
           ...currentConnection,
-          error: currentConnection.error || 'Backend indisponÃ­vel. Verifique se o servidor na porta 3001 estÃ¡ no ar.',
+          error: currentConnection.error || 'Backend indisponível. Verifique se o servidor na porta 3001 está no ar.',
         }));
       }
     }
 
-        let wsUrl = '';
-    if (API_BASE) {
-      if (API_BASE.startsWith('http')) {
-        wsUrl = API_BASE.replace(/^http/, 'ws') + '/ws';
-      } else {
-        wsUrl = 'wss://' + API_BASE + '/ws';
-      }
-    } else {
-      wsUrl = window.location.protocol === 'https:' 
-        ? "wss://${window.location.host}/ws" 
-        : "ws://${window.location.host}/ws";
-    }
+    // WebSocket para receber atualizações em tempo real (QR code, status)
+    const wsProto = API_BASE.startsWith('https') ? 'wss' : 'ws';
+    const wsHost = API_BASE.replace(/^https?:\/\//, '');
+    const wsUrl = wsHost ? `${wsProto}://${wsHost}/ws` : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
-    const ws = new WebSocket(wsUrl);
-    ws.onmessage = (event) => {
-      try {
-        ingest(JSON.parse(event.data) as ApiStatus);
-      } catch {
-        // ignore
-      }
-    };
-    ws.onerror = () => {
-      // fallback
-    };
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = (event) => {
+        try {
+          ingest(JSON.parse(event.data) as ApiStatus);
+        } catch {
+          // ignore
+        }
+      };
+      ws.onerror = () => {
+        // fallback: o poll de 4s cobre
+      };
+    } catch {
+      // WebSocket failed to connect — poll will handle it
+    }
 
     void pollStatus();
     const intervalId = window.setInterval(() => {
@@ -444,7 +441,9 @@ export function useWhatsAppConnection(currentUserId?: string) {
 
     return () => {
       cancelled = true;
-      ws.close();
+      if (ws) {
+        ws.close();
+      }
       window.clearInterval(intervalId);
     };
   }, []);
@@ -522,7 +521,7 @@ export function useCampaignManager(currentUserId?: string) {
       payload?: MassPayload,
     ): Promise<{ success: boolean; message: string; enviados?: number; falhas?: number }> => {
       if (isSendingRef.current || !destino.trim()) {
-        return { success: false, message: 'Destino ou mensagem invÃ¡lidos.' };
+        return { success: false, message: 'Destino ou mensagem inválidos.' };
       }
       isSendingRef.current = true;
 
@@ -571,7 +570,7 @@ export function useCampaignManager(currentUserId?: string) {
         if (!response.ok) {
           return {
             success: false,
-            message: data.error || `Erro HTTP ${response.status}: PermissÃ£o negada ou falha no disparo.`,
+            message: data.error || `Erro HTTP ${response.status}: Permissão negada ou falha no disparo.`,
           };
         }
 
@@ -625,7 +624,7 @@ export function useCampaignManager(currentUserId?: string) {
         ]);
         return {
           success: false,
-          message: err?.message || 'Falha de comunicaÃ§Ã£o com o servidor.',
+          message: err?.message || 'Falha de comunicação com o servidor.',
         };
       } finally {
         window.setTimeout(() => {
@@ -645,4 +644,3 @@ export function useCampaignManager(currentUserId?: string) {
     dispararCampanha,
   };
 }
-
